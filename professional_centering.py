@@ -9,27 +9,53 @@ class ProfessionalCenteringEngineV68:
         try:
             gray = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
 
-            height, width = gray.shape
+            # Detect main object via adaptive threshold
+            thresh = cv2.adaptiveThreshold(
+                gray,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV,
+                51,
+                5
+            )
 
-            left_half = gray[:, :width // 2]
-            right_half = gray[:, width // 2:]
-            right_half_flipped = np.fliplr(right_half)
+            contours, _ = cv2.findContours(
+                thresh,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE
+            )
 
-            min_width = min(left_half.shape[1], right_half_flipped.shape[1])
-            left_half = left_half[:, :min_width]
-            right_half_flipped = right_half_flipped[:, :min_width]
+            if not contours:
+                return {
+                    "horizontal_ratio": 0.5,
+                    "vertical_ratio": 0.5,
+                    "error": "No contours"
+                }
 
-            diff = np.mean(np.abs(left_half - right_half_flipped))
-            normalized_diff = diff / 255.0
+            largest = max(contours, key=cv2.contourArea)
 
-            symmetry_score = 1.0 - normalized_diff
+            x, y, w, h = cv2.boundingRect(largest)
 
-            # Clamp safely
-            symmetry_score = max(0.0, min(symmetry_score, 1.0))
+            img_h, img_w = gray.shape
+
+            left_margin = x
+            right_margin = img_w - (x + w)
+            top_margin = y
+            bottom_margin = img_h - (y + h)
+
+            if max(left_margin, right_margin) == 0 or max(top_margin, bottom_margin) == 0:
+                return {
+                    "horizontal_ratio": 0.5,
+                    "vertical_ratio": 0.5,
+                    "error": "Invalid margins"
+                }
+
+            h_ratio = min(left_margin, right_margin) / max(left_margin, right_margin)
+            v_ratio = min(top_margin, bottom_margin) / max(top_margin, bottom_margin)
 
             return {
-                "horizontal_ratio": float(symmetry_score),
-                "vertical_ratio": float(symmetry_score)
+                "horizontal_ratio": float(h_ratio),
+                "vertical_ratio": float(v_ratio)
             }
 
         except Exception as e:
