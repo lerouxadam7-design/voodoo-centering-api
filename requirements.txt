@@ -1,4 +1,5 @@
-fastapi
-uvicorn
+streamlit
 numpy
+requests
 opencv-python-headless
+pandas
