@@ -105,7 +105,7 @@ class ProfessionalCenteringEngineV68:
 
         return h_ratio, v_ratio
 
-    def analyze_array(self, image_array):
+def analyze_array(self, image_array):
 
     print("Analyze function called")
 
