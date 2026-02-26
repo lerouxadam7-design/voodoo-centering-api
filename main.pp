@@ -1,0 +1,19 @@
+from fastapi import FastAPI, File, UploadFile
+import numpy as np
+import cv2
+from professional_centering import ProfessionalCenteringEngineV68
+
+app = FastAPI()
+
+centering_engine = ProfessionalCenteringEngineV68()
+
+@app.post("/analyze")
+async def analyze(file: UploadFile = File(...)):
+
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    result = centering_engine.analyze_array(image)
+
+    return result
