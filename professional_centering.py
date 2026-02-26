@@ -7,21 +7,27 @@ class ProfessionalCenteringEngineV68:
     def detect_card(self, image):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray, 75, 200)
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        contours, _ = cv2.findContours(
+            edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
 
         if not contours:
-            raise ValueError("No contours detected")
+            return None
 
         largest = max(contours, key=cv2.contourArea)
+
         peri = cv2.arcLength(largest, True)
         approx = cv2.approxPolyDP(largest, 0.02 * peri, True)
 
+        # If we detect clean 4-corner contour
         if len(approx) == 4:
             pts = approx.reshape(4, 2).astype("float32")
             return self.order_points(pts)
 
-        # Fallback: use bounding rectangle
+        # Fallback to bounding rectangle
         x, y, w, h = cv2.boundingRect(largest)
+
         pts = np.array([
             [x, y],
             [x + w, y],
@@ -29,9 +35,6 @@ class ProfessionalCenteringEngineV68:
             [x, y + h]
         ], dtype="float32")
 
-return self.order_points(pts)
-
-        pts = approx.reshape(4, 2).astype("float32")
         return self.order_points(pts)
 
     def warp_card(self, image, pts):
@@ -53,18 +56,21 @@ return self.order_points(pts)
         ], dtype="float32")
 
         M = cv2.getPerspectiveTransform(pts, dst)
-        return cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+        warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+
+        return warped
 
     def detect_borders(self, warped):
         h, w, _ = warped.shape
+
         band_w = int(w * 0.15)
         band_h = int(h * 0.15)
 
         bands = [
-            warped[:, :band_w],
-            warped[:, w - band_w:],
-            warped[:band_h, :],
-            warped[h - band_h:, :]
+            warped[:, :band_w],                # left
+            warped[:, w - band_w:],            # right
+            warped[:band_h, :],                # top
+            warped[h - band_h:, :]             # bottom
         ]
 
         borders = []
@@ -112,6 +118,9 @@ return self.order_points(pts)
         top_border = top
         bottom_border = h - bottom
 
+        if max(left_border, right_border) == 0 or max(top_border, bottom_border) == 0:
+            return None
+
         h_ratio = min(left_border, right_border) / max(left_border, right_border)
         v_ratio = min(top_border, bottom_border) / max(top_border, bottom_border)
 
@@ -121,6 +130,14 @@ return self.order_points(pts)
 
         try:
             pts = self.detect_card(image_array)
+
+            if pts is None:
+                return {
+                    "horizontal_ratio": 0.5,
+                    "vertical_ratio": 0.5,
+                    "error": "Card not detected"
+                }
+
             warped = self.warp_card(image_array, pts)
 
             borders = self.detect_borders(warped)
@@ -130,7 +147,6 @@ return self.order_points(pts)
                 return {
                     "horizontal_ratio": 0.5,
                     "vertical_ratio": 0.5,
-                    "confidence": 0,
                     "error": "Border detection failed"
                 }
 
@@ -138,16 +154,13 @@ return self.order_points(pts)
 
             return {
                 "horizontal_ratio": float(h_ratio),
-                "vertical_ratio": float(v_ratio),
-                "confidence": 100
+                "vertical_ratio": float(v_ratio)
             }
 
         except Exception as e:
-            # Graceful fallback
             return {
                 "horizontal_ratio": 0.5,
                 "vertical_ratio": 0.5,
-                "confidence": 0,
                 "error": str(e)
             }
 
