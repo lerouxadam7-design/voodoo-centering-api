@@ -4,73 +4,35 @@ import numpy as np
 
 class ProfessionalCenteringEngineV68:
 
-    def detect_card(self, image):
+    def isolate_card_region(self, image):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 75, 200)
 
-        contours, _ = cv2.findContours(
-            edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
+        # threshold bright regions (card surface)
+        _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
 
-        if not contours:
-            return None
+        coords = np.column_stack(np.where(thresh > 0))
 
-        largest = max(contours, key=cv2.contourArea)
+        if coords.size == 0:
+            return image  # fallback to full image
 
-        peri = cv2.arcLength(largest, True)
-        approx = cv2.approxPolyDP(largest, 0.02 * peri, True)
+        y_min, x_min = coords.min(axis=0)
+        y_max, x_max = coords.max(axis=0)
 
-        # If we detect clean 4-corner contour
-        if len(approx) == 4:
-            pts = approx.reshape(4, 2).astype("float32")
-            return self.order_points(pts)
+        cropped = image[y_min:y_max, x_min:x_max]
 
-        # Fallback to bounding rectangle
-        x, y, w, h = cv2.boundingRect(largest)
+        return cropped
 
-        pts = np.array([
-            [x, y],
-            [x + w, y],
-            [x + w, y + h],
-            [x, y + h]
-        ], dtype="float32")
-
-        return self.order_points(pts)
-
-    def warp_card(self, image, pts):
-        (tl, tr, br, bl) = pts
-
-        widthA = np.linalg.norm(br - bl)
-        widthB = np.linalg.norm(tr - tl)
-        maxWidth = int(max(widthA, widthB))
-
-        heightA = np.linalg.norm(tr - br)
-        heightB = np.linalg.norm(tl - bl)
-        maxHeight = int(max(heightA, heightB))
-
-        dst = np.array([
-            [0, 0],
-            [maxWidth - 1, 0],
-            [maxWidth - 1, maxHeight - 1],
-            [0, maxHeight - 1]
-        ], dtype="float32")
-
-        M = cv2.getPerspectiveTransform(pts, dst)
-        warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
-
-        return warped
-
-    def detect_borders(self, warped):
-        h, w, _ = warped.shape
+    def detect_borders(self, image):
+        h, w, _ = image.shape
 
         band_w = int(w * 0.15)
         band_h = int(h * 0.15)
 
         bands = [
-            warped[:, :band_w],                # left
-            warped[:, w - band_w:],            # right
-            warped[:band_h, :],                # top
-            warped[h - band_h:, :]             # bottom
+            image[:, :band_w],            # left
+            image[:, w - band_w:],        # right
+            image[:band_h, :],            # top
+            image[h - band_h:, :]         # bottom
         ]
 
         borders = []
@@ -83,7 +45,7 @@ class ProfessionalCenteringEngineV68:
                 edges,
                 1,
                 np.pi / 180,
-                threshold=80,
+                threshold=60,
                 minLineLength=int((h if idx < 2 else w) * 0.6),
                 maxLineGap=10
             )
@@ -106,11 +68,11 @@ class ProfessionalCenteringEngineV68:
 
         return borders
 
-    def calculate_centering(self, warped, borders):
+    def calculate_centering(self, image, borders):
         if None in borders:
             return None
 
-        h, w, _ = warped.shape
+        h, w, _ = image.shape
         left, right, top, bottom = borders
 
         left_border = left
@@ -127,21 +89,11 @@ class ProfessionalCenteringEngineV68:
         return h_ratio, v_ratio
 
     def analyze_array(self, image_array):
-
         try:
-            pts = self.detect_card(image_array)
+            card = self.isolate_card_region(image_array)
 
-            if pts is None:
-                return {
-                    "horizontal_ratio": 0.5,
-                    "vertical_ratio": 0.5,
-                    "error": "Card not detected"
-                }
-
-            warped = self.warp_card(image_array, pts)
-
-            borders = self.detect_borders(warped)
-            ratios = self.calculate_centering(warped, borders)
+            borders = self.detect_borders(card)
+            ratios = self.calculate_centering(card, borders)
 
             if ratios is None:
                 return {
@@ -163,13 +115,3 @@ class ProfessionalCenteringEngineV68:
                 "vertical_ratio": 0.5,
                 "error": str(e)
             }
-
-    def order_points(self, pts):
-        rect = np.zeros((4, 2), dtype="float32")
-        s = pts.sum(axis=1)
-        rect[0] = pts[np.argmin(s)]
-        rect[2] = pts[np.argmax(s)]
-        diff = np.diff(pts, axis=1)
-        rect[1] = pts[np.argmin(diff)]
-        rect[3] = pts[np.argmax(diff)]
-        return rect
