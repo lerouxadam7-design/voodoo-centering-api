@@ -107,11 +107,18 @@ class ProfessionalCenteringEngineV68:
 
     def analyze_array(self, image_array):
 
+    print("Analyze function called")
+
     try:
+        print("Attempting detect_card")
         pts = self.detect_card(image_array)
+
+        print("Warping card")
         warped = self.warp_card(image_array, pts)
 
+        print("Detecting borders")
         borders = self.detect_borders(warped)
+
         ratios = self.calculate_centering(warped, borders)
 
         if ratios is None:
@@ -129,7 +136,7 @@ class ProfessionalCenteringEngineV68:
         }
 
     except Exception as e:
-        # Safe fallback if detection fails
+        print("Exception occurred:", str(e))
         return {
             "horizontal_ratio": 0.5,
             "vertical_ratio": 0.5,
