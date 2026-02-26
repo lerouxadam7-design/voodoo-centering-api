@@ -9,41 +9,27 @@ class ProfessionalCenteringEngineV68:
         try:
             gray = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
 
-            # threshold for card region
-            _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+            height, width = gray.shape
 
-            coords = np.column_stack(np.where(thresh > 0))
+            left_half = gray[:, :width // 2]
+            right_half = gray[:, width // 2:]
+            right_half_flipped = np.fliplr(right_half)
 
-            if coords.size == 0:
-                return {
-                    "horizontal_ratio": 0.5,
-                    "vertical_ratio": 0.5,
-                    "error": "Card not detected"
-                }
+            min_width = min(left_half.shape[1], right_half_flipped.shape[1])
+            left_half = left_half[:, :min_width]
+            right_half_flipped = right_half_flipped[:, :min_width]
 
-            y_min, x_min = coords.min(axis=0)
-            y_max, x_max = coords.max(axis=0)
+            diff = np.mean(np.abs(left_half - right_half_flipped))
+            normalized_diff = diff / 255.0
 
-            h, w = gray.shape
+            symmetry_score = 1.0 - normalized_diff
 
-            left_margin = x_min
-            right_margin = w - x_max
-            top_margin = y_min
-            bottom_margin = h - y_max
-
-            if max(left_margin, right_margin) == 0 or max(top_margin, bottom_margin) == 0:
-                return {
-                    "horizontal_ratio": 0.5,
-                    "vertical_ratio": 0.5,
-                    "error": "Invalid margins"
-                }
-
-            h_ratio = min(left_margin, right_margin) / max(left_margin, right_margin)
-            v_ratio = min(top_margin, bottom_margin) / max(top_margin, bottom_margin)
+            # Clamp safely
+            symmetry_score = max(0.0, min(symmetry_score, 1.0))
 
             return {
-                "horizontal_ratio": float(h_ratio),
-                "vertical_ratio": float(v_ratio)
+                "horizontal_ratio": float(symmetry_score),
+                "vertical_ratio": float(symmetry_score)
             }
 
         except Exception as e:
