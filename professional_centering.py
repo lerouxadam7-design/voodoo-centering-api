@@ -106,21 +106,38 @@ class ProfessionalCenteringEngineV68:
         return h_ratio, v_ratio
 
     def analyze_array(self, image_array):
-        pts = self.detect_card(image_array)
-        warped = self.warp_card(image_array, pts)
 
-        borders = self.detect_borders(warped)
-        ratios = self.calculate_centering(warped, borders)
+        try:
+            pts = self.detect_card(image_array)
+            warped = self.warp_card(image_array, pts)
 
-        if ratios is None:
-            return {"error": "Border detection failed"}
+            borders = self.detect_borders(warped)
+            ratios = self.calculate_centering(warped, borders)
 
-        h_ratio, v_ratio = ratios
+            if ratios is None:
+                return {
+                    "horizontal_ratio": 0.5,
+                    "vertical_ratio": 0.5,
+                    "confidence": 0,
+                    "error": "Border detection failed"
+                }
 
-        return {
-            "horizontal_ratio": float(h_ratio),
-            "vertical_ratio": float(v_ratio)
-        }
+            h_ratio, v_ratio = ratios
+
+            return {
+                "horizontal_ratio": float(h_ratio),
+                "vertical_ratio": float(v_ratio),
+                "confidence": 100
+            }
+
+        except Exception as e:
+            # Graceful fallback
+            return {
+                "horizontal_ratio": 0.5,
+                "vertical_ratio": 0.5,
+                "confidence": 0,
+                "error": str(e)
+            }
 
     def order_points(self, pts):
         rect = np.zeros((4, 2), dtype="float32")
