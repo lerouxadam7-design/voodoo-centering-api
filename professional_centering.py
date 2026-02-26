@@ -107,6 +107,7 @@ class ProfessionalCenteringEngineV68:
 
     def analyze_array(self, image_array):
 
+    try:
         pts = self.detect_card(image_array)
         warped = self.warp_card(image_array, pts)
 
@@ -114,7 +115,11 @@ class ProfessionalCenteringEngineV68:
         ratios = self.calculate_centering(warped, borders)
 
         if ratios is None:
-            return {"error": "Border detection failed"}
+            return {
+                "horizontal_ratio": 0.5,
+                "vertical_ratio": 0.5,
+                "error": "Border detection failed"
+            }
 
         h_ratio, v_ratio = ratios
 
@@ -123,12 +128,10 @@ class ProfessionalCenteringEngineV68:
             "vertical_ratio": float(v_ratio)
         }
 
-    def order_points(self, pts):
-        rect = np.zeros((4, 2), dtype="float32")
-        s = pts.sum(axis=1)
-        rect[0] = pts[np.argmin(s)]
-        rect[2] = pts[np.argmax(s)]
-        diff = np.diff(pts, axis=1)
-        rect[1] = pts[np.argmin(diff)]
-        rect[3] = pts[np.argmax(diff)]
-        return rect
+    except Exception as e:
+        # Safe fallback if detection fails
+        return {
+            "horizontal_ratio": 0.5,
+            "vertical_ratio": 0.5,
+            "error": str(e)
+        }
