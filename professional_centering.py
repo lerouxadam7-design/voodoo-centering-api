@@ -16,8 +16,20 @@ class ProfessionalCenteringEngineV68:
         peri = cv2.arcLength(largest, True)
         approx = cv2.approxPolyDP(largest, 0.02 * peri, True)
 
-        if len(approx) != 4:
-            raise ValueError("Card detection failed")
+        if len(approx) == 4:
+            pts = approx.reshape(4, 2).astype("float32")
+            return self.order_points(pts)
+
+        # Fallback: use bounding rectangle
+        x, y, w, h = cv2.boundingRect(largest)
+        pts = np.array([
+            [x, y],
+            [x + w, y],
+            [x + w, y + h],
+            [x, y + h]
+        ], dtype="float32")
+
+return self.order_points(pts)
 
         pts = approx.reshape(4, 2).astype("float32")
         return self.order_points(pts)
