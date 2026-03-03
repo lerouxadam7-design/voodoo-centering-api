@@ -19,8 +19,19 @@ class VoodooSlabCentering:
 
         # Heavy blur to remove chrome reflections
         blur = cv2.GaussianBlur(gray, (31, 31), 0)
+        
+        # Crop outer 10% to ignore slab edges
+        crop_pct = 0.10
+        h2, w2 = blur.shape
+
+        x_start = int(w2 * crop_pct)
+        x_end   = int(w2 * (1 - crop_pct))
+        y_start = int(h2 * crop_pct)
+        y_end   = int(h2 * (1 - crop_pct))
 
         h2, w2 = blur.shape
+
+        blur = blur[y_start:y_end, x_start:x_end]
 
         # Split into halves
         left_half = blur[:, :w2//2]
