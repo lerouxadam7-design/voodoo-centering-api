@@ -1,12 +1,11 @@
 from fastapi import FastAPI, File, UploadFile
 import numpy as np
 import cv2
-from professional_centering import ProfessionalCenteringEngineV68
-from voodoo_centering_v1 import VoodooSlabCentering
+from professional_centering import VoodooSlabCentering
 
 app = FastAPI()
 
-centering_engine = ProfessionalCenteringEngineV68()
+centering_engine = VoodooSlabCentering()
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
