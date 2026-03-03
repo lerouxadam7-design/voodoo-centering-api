@@ -7,6 +7,47 @@ class VoodooSlabCentering:
     def __init__(self):
         pass
 
+    def detect_border_thickness(self, gray):
+
+        h, w = gray.shape
+
+        # Threshold to isolate white border
+        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+
+        # LEFT border
+        left_border = 0
+        for x in range(w // 4):
+            column = thresh[:, x]
+            if np.mean(column) < 240:  # transition from white
+                left_border = x
+                break
+
+        # RIGHT border
+        right_border = 0
+        for x in range(w - 1, 3 * w // 4, -1):
+            column = thresh[:, x]
+            if np.mean(column) < 240:
+                right_border = w - x
+                break
+
+        # TOP border
+        top_border = 0
+        for y in range(h // 4):
+            row = thresh[y, :]
+            if np.mean(row) < 240:
+                top_border = y
+                break
+
+        # BOTTOM border
+        bottom_border = 0
+        for y in range(h - 1, 3 * h // 4, -1):
+            row = thresh[y, :]
+            if np.mean(row) < 240:
+                bottom_border = h - y
+                break
+
+        return left_border, right_border, top_border, bottom_border
+
     def analyze_array(self, image_array):
 
         # Downscale for stability
@@ -17,52 +58,17 @@ class VoodooSlabCentering:
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # Heavy blur to remove chrome reflections
-        blur = cv2.GaussianBlur(gray, (31, 31), 0)
-        
-        # Crop outer 10% to ignore slab edges
-        crop_pct = 0.10
-        h2, w2 = blur.shape
+        left, right, top, bottom = self.detect_border_thickness(gray)
 
-        x_start = int(w2 * crop_pct)
-        x_end   = int(w2 * (1 - crop_pct))
-        y_start = int(h2 * crop_pct)
-        y_end   = int(h2 * (1 - crop_pct))
+        if min(left, right, top, bottom) == 0:
+            return {
+                "horizontal_ratio": 0.5,
+                "vertical_ratio": 0.5,
+                "confidence": 0.0
+            }
 
-        h2, w2 = blur.shape
-
-        blur = blur[y_start:y_end, x_start:x_end]
-
-        # Split into halves
-        left_half = blur[:, :w2//2]
-        right_half = blur[:, w2//2:]
-
-        top_half = blur[:h2//2, :]
-        bottom_half = blur[h2//2:, :]
-
-        # Mirror right & bottom for comparison
-        right_mirror = np.fliplr(right_half)
-        bottom_mirror = np.flipud(bottom_half)
-
-        # Crop to equal dimensions
-        min_w = min(left_half.shape[1], right_mirror.shape[1])
-        left_half = left_half[:, :min_w]
-        right_mirror = right_mirror[:, :min_w]
-
-        min_h = min(top_half.shape[0], bottom_mirror.shape[0])
-        top_half = top_half[:min_h, :]
-        bottom_mirror = bottom_mirror[:min_h, :]
-
-        # Compute difference
-        horizontal_diff = np.mean(np.abs(left_half - right_mirror))
-        vertical_diff = np.mean(np.abs(top_half - bottom_mirror))
-
-        # Normalize
-        horizontal_ratio = 1 - (horizontal_diff / 255)
-        vertical_ratio = 1 - (vertical_diff / 255)
-
-        horizontal_ratio = max(0, min(1, horizontal_ratio))
-        vertical_ratio = max(0, min(1, vertical_ratio))
+        horizontal_ratio = min(left, right) / max(left, right)
+        vertical_ratio = min(top, bottom) / max(top, bottom)
 
         return {
             "horizontal_ratio": float(horizontal_ratio),
