@@ -56,30 +56,46 @@ class VoodooSlabCentering:
     # -----------------------------
     def find_slab_contour(self, image):
 
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (7, 7), 0)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        edges = cv2.Canny(blur, 50, 150)
+    # Strong blur to remove internal card noise
+    blur = cv2.GaussianBlur(gray, (15, 15), 0)
 
-        contours, _ = cv2.findContours(
-            edges,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE
-        )
+    # OTSU threshold
+    _, thresh = cv2.threshold(
+        blur,
+        0,
+        255,
+        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
 
-        if not contours:
-            return None
+    contours, _ = cv2.findContours(
+        thresh,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
 
-        # Largest contour = slab
-        largest = max(contours, key=cv2.contourArea)
-
-        peri = cv2.arcLength(largest, True)
-        approx = cv2.approxPolyDP(largest, 0.02 * peri, True)
-
-        if len(approx) == 4:
-            return approx.reshape(4, 2)
-
+    if not contours:
         return None
+
+    largest = max(contours, key=cv2.contourArea)
+
+    peri = cv2.arcLength(largest, True)
+    approx = cv2.approxPolyDP(largest, 0.02 * peri, True)
+
+    if len(approx) == 4:
+        return approx.reshape(4, 2)
+
+    # Fallback: bounding rectangle
+    x, y, w, h = cv2.boundingRect(largest)
+    rect = np.array([
+        [x, y],
+        [x + w, y],
+        [x + w, y + h],
+        [x, y + h]
+    ])
+
+    return rect
 
     # -----------------------------
     # Compute centering after crop
