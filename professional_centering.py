@@ -76,7 +76,7 @@ class VoodooSlabCentering:
         )
 
         if not contours:
-        return None
+            return None
 
     largest = max(contours, key=cv2.contourArea)
 
