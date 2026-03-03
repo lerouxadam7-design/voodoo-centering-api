@@ -7,6 +7,9 @@ class VoodooSlabCentering:
     def __init__(self):
         pass
 
+    # -----------------------------
+    # Order 4 points consistently
+    # -----------------------------
     def order_points(self, pts):
         rect = np.zeros((4, 2), dtype="float32")
 
@@ -20,7 +23,11 @@ class VoodooSlabCentering:
 
         return rect
 
+    # -----------------------------
+    # Perspective warp
+    # -----------------------------
     def perspective_warp(self, image, pts):
+
         rect = self.order_points(pts)
         (tl, tr, br, bl) = rect
 
@@ -44,6 +51,9 @@ class VoodooSlabCentering:
 
         return warped
 
+    # -----------------------------
+    # Find inner card contour (slab-first)
+    # -----------------------------
     def find_card_contour(self, image):
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -69,12 +79,16 @@ class VoodooSlabCentering:
         h, w = image.shape[:2]
         image_area = h * w
 
-        for cnt in contours[1:]:  # Skip largest (slab)
+        for cnt in contours:
 
             area = cv2.contourArea(cnt)
 
+            # Skip slab frame (too large)
+            if area > image_area * 0.90:
+                continue
+
             if area < image_area * 0.10:
-                continue  # Too small
+                continue
 
             peri = cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
@@ -84,12 +98,15 @@ class VoodooSlabCentering:
                 x, y, cw, ch = cv2.boundingRect(approx)
                 aspect_ratio = ch / float(cw)
 
-                # Sports card ratio approx 1.3 - 1.6
+                # Sports card vertical ratio range
                 if 1.2 < aspect_ratio < 1.7:
                     return approx.reshape(4, 2)
 
-    return None
+        return None
 
+    # -----------------------------
+    # Calculate centering ratios
+    # -----------------------------
     def calculate_centering(self, warped):
 
         h, w = warped.shape[:2]
@@ -116,13 +133,14 @@ class VoodooSlabCentering:
         h_ratio = min(left_margin, right_margin) / max(left_margin, right_margin)
         v_ratio = min(top_margin, bottom_margin) / max(top_margin, bottom_margin)
 
-        confidence = 1.0
+        return float(h_ratio), float(v_ratio), 1.0
 
-        return float(h_ratio), float(v_ratio), confidence
-
+    # -----------------------------
+    # Main entry
+    # -----------------------------
     def analyze_array(self, image_array):
 
-        # Downscale for stability
+        # Downscale for performance & stability
         target_width = 1200
         h, w = image_array.shape[:2]
         scale = target_width / w
@@ -146,3 +164,4 @@ class VoodooSlabCentering:
             "vertical_ratio": v_ratio,
             "confidence": confidence
         }
+     
