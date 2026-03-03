@@ -69,20 +69,26 @@ class VoodooSlabCentering:
         h, w = image.shape[:2]
         image_area = h * w
 
-        for cnt in contours:
+        for cnt in contours[1:]:  # Skip largest (slab)
+
             area = cv2.contourArea(cnt)
 
-            # Skip extremely large contour (full slab)
-            if area > image_area * 0.95:
-                continue
+            if area < image_area * 0.10:
+                continue  # Too small
 
             peri = cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
 
             if len(approx) == 4:
-                return approx.reshape(4, 2)
 
-        return None
+                x, y, cw, ch = cv2.boundingRect(approx)
+                aspect_ratio = ch / float(cw)
+
+                # Sports card ratio approx 1.3 - 1.6
+                if 1.2 < aspect_ratio < 1.7:
+                    return approx.reshape(4, 2)
+
+    return None
 
     def calculate_centering(self, warped):
 
