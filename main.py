@@ -2,6 +2,7 @@ from fastapi import FastAPI, File, UploadFile
 import numpy as np
 import cv2
 from professional_centering import ProfessionalCenteringEngineV68
+from voodoo_centering_v1 import VoodooSlabCentering
 
 app = FastAPI()
 
