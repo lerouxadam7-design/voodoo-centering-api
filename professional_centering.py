@@ -8,7 +8,7 @@ class VoodooSlabCentering:
         pass
 
     # -----------------------------
-    # Order 4 points consistently
+    # Order 4 points
     # -----------------------------
     def order_points(self, pts):
         rect = np.zeros((4, 2), dtype="float32")
@@ -52,66 +52,43 @@ class VoodooSlabCentering:
         return warped
 
     # -----------------------------
-    # Find inner card contour (slab-first)
+    # Detect slab outer contour
     # -----------------------------
-    def find_card_contour(self, image):
+    def find_slab_contour(self, image):
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (7, 7), 0)
 
-        thresh = cv2.adaptiveThreshold(
-            blur,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV,
-            51,
-            5
-        )
+        edges = cv2.Canny(blur, 50, 150)
 
         contours, _ = cv2.findContours(
-            thresh,
+            edges,
             cv2.RETR_EXTERNAL,
             cv2.CHAIN_APPROX_SIMPLE
         )
 
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        if not contours:
+            return None
 
-        h, w = image.shape[:2]
-        image_area = h * w
+        # Largest contour = slab
+        largest = max(contours, key=cv2.contourArea)
 
-        for cnt in contours:
+        peri = cv2.arcLength(largest, True)
+        approx = cv2.approxPolyDP(largest, 0.02 * peri, True)
 
-            area = cv2.contourArea(cnt)
-
-            # Skip slab frame (too large)
-            if area > image_area * 0.90:
-                continue
-
-            if area < image_area * 0.10:
-                continue
-
-            peri = cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
-
-            if len(approx) == 4:
-
-                x, y, cw, ch = cv2.boundingRect(approx)
-                aspect_ratio = ch / float(cw)
-
-                # Sports card vertical ratio range
-                if 1.2 < aspect_ratio < 1.7:
-                    return approx.reshape(4, 2)
+        if len(approx) == 4:
+            return approx.reshape(4, 2)
 
         return None
 
     # -----------------------------
-    # Calculate centering ratios
+    # Compute centering after crop
     # -----------------------------
-    def calculate_centering(self, warped):
+    def calculate_centering(self, cropped):
 
-        h, w = warped.shape[:2]
+        h, w = cropped.shape[:2]
 
-        gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray, 50, 150)
 
         coords = np.column_stack(np.where(edges > 0))
@@ -140,28 +117,39 @@ class VoodooSlabCentering:
     # -----------------------------
     def analyze_array(self, image_array):
 
-        # Downscale for performance & stability
+        # Downscale for consistency
         target_width = 1200
         h, w = image_array.shape[:2]
         scale = target_width / w
         image = cv2.resize(image_array, (target_width, int(h * scale)))
 
-        pts = self.find_card_contour(image)
+        slab_pts = self.find_slab_contour(image)
 
-        if pts is None:
+        if slab_pts is None:
             return {
                 "horizontal_ratio": 0.5,
                 "vertical_ratio": 0.5,
                 "confidence": 0.0
             }
 
-        warped = self.perspective_warp(image, pts)
+        slab_warped = self.perspective_warp(image, slab_pts)
 
-        h_ratio, v_ratio, confidence = self.calculate_centering(warped)
+        # Crop inward to remove slab border (8% on each side)
+        crop_pct = 0.08
+
+        h2, w2 = slab_warped.shape[:2]
+
+        x_start = int(w2 * crop_pct)
+        x_end = int(w2 * (1 - crop_pct))
+        y_start = int(h2 * crop_pct)
+        y_end = int(h2 * (1 - crop_pct))
+
+        cropped = slab_warped[y_start:y_end, x_start:x_end]
+
+        h_ratio, v_ratio, confidence = self.calculate_centering(cropped)
 
         return {
             "horizontal_ratio": h_ratio,
             "vertical_ratio": v_ratio,
             "confidence": confidence
         }
-     
