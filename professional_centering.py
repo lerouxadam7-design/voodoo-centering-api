@@ -7,9 +7,9 @@ class VoodooRawCardCentering:
     def __init__(self):
         pass
 
-    # --------------------------------
-    # Order points consistently
-    # --------------------------------
+    # -----------------------------
+    # Order 4 points consistently
+    # -----------------------------
     def order_points(self, pts):
         rect = np.zeros((4, 2), dtype="float32")
 
@@ -23,9 +23,9 @@ class VoodooRawCardCentering:
 
         return rect
 
-    # --------------------------------
+    # -----------------------------
     # Perspective warp
-    # --------------------------------
+    # -----------------------------
     def warp(self, image, pts):
 
         rect = self.order_points(pts)
@@ -51,16 +51,14 @@ class VoodooRawCardCentering:
 
         return warped
 
-    # --------------------------------
-    # Detect card contour
-    # --------------------------------
+    # -----------------------------
+    # Detect card contour (robust)
+    # -----------------------------
     def detect_card(self, image):
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
         blur = cv2.GaussianBlur(gray, (11, 11), 0)
 
-        # Adaptive threshold instead of Canny
         thresh = cv2.adaptiveThreshold(
             blur,
             255,
@@ -70,7 +68,6 @@ class VoodooRawCardCentering:
             5
         )
 
-        # Morphological close to connect edges
         kernel = np.ones((5, 5), np.uint8)
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 
@@ -102,13 +99,12 @@ class VoodooRawCardCentering:
 
         return None
 
-    # --------------------------------
+    # -----------------------------
     # Detect white border thickness
-    # --------------------------------
+    # -----------------------------
     def detect_white_border(self, gray):
 
         h, w = gray.shape
-
         blur = cv2.GaussianBlur(gray, (25, 25), 0)
 
         left = 0
@@ -137,9 +133,9 @@ class VoodooRawCardCentering:
 
         return left, right, top, bottom
 
-    # --------------------------------
+    # -----------------------------
     # Main entry
-    # --------------------------------
+    # -----------------------------
     def analyze_array(self, image_array):
 
         target_width = 1200
@@ -147,12 +143,33 @@ class VoodooRawCardCentering:
         scale = target_width / w
         image = cv2.resize(image_array, (target_width, int(h * scale)))
 
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        pts = self.detect_card(image)
 
-        edges = cv2.Canny(gray, 50, 150)
+        if pts is None:
+            return {
+                "horizontal_ratio": 0.5,
+                "vertical_ratio": 0.5,
+                "confidence": 0.0
+            }
+
+        warped = self.warp(image, pts)
+
+        gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+
+        left, right, top, bottom = self.detect_white_border(gray)
+
+        if min(left, right, top, bottom) == 0:
+            return {
+                "horizontal_ratio": 0.5,
+                "vertical_ratio": 0.5,
+                "confidence": 0.0
+            }
+
+        horizontal_ratio = min(left, right) / max(left, right)
+        vertical_ratio   = min(top, bottom) / max(top, bottom)
 
         return {
-            "mean_gray": float(np.mean(gray)),
-            "edge_mean": float(np.mean(edges)),
+            "horizontal_ratio": float(horizontal_ratio),
+            "vertical_ratio": float(vertical_ratio),
             "confidence": 1.0
         }
