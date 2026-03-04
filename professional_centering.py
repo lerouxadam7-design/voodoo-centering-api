@@ -54,15 +54,28 @@ class VoodooRawCardCentering:
     # --------------------------------
     # Detect card contour
     # --------------------------------
-    def detect_card(self, image):
+        def detect_card(self, image):
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        edges = cv2.Canny(blur, 50, 150)
+        blur = cv2.GaussianBlur(gray, (11, 11), 0)
+
+        # Adaptive threshold instead of Canny
+        thresh = cv2.adaptiveThreshold(
+            blur,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            51,
+            5
+        )
+
+        # Morphological close to connect edges
+        kernel = np.ones((5, 5), np.uint8)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 
         contours, _ = cv2.findContours(
-            edges,
+            thresh,
             cv2.RETR_EXTERNAL,
             cv2.CHAIN_APPROX_SIMPLE
         )
@@ -72,11 +85,13 @@ class VoodooRawCardCentering:
 
         contours = sorted(contours, key=cv2.contourArea, reverse=True)
 
+        image_area = image.shape[0] * image.shape[1]
+
         for cnt in contours:
 
             area = cv2.contourArea(cnt)
 
-            if area < image.shape[0] * image.shape[1] * 0.20:
+            if area < image_area * 0.25:
                 continue
 
             peri = cv2.arcLength(cnt, True)
