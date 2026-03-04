@@ -2,69 +2,63 @@ import cv2
 import numpy as np
 
 
-class VoodooRawCardCentering:
+class VoodooPredictiveCentering:
 
     def __init__(self):
         pass
 
     def analyze_array(self, image_array):
 
-        # Downscale
-        target_width = 1000
+        # Downscale for consistency
+        target_width = 800
         h, w = image_array.shape[:2]
         scale = target_width / w
         image = cv2.resize(image_array, (target_width, int(h * scale)))
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
+        # Remove outer 5% to reduce background influence
         h2, w2 = gray.shape
+        margin_x = int(w2 * 0.05)
+        margin_y = int(h2 * 0.05)
 
-        # Small crop to remove tiny background edge
-        crop_margin = int(w2 * 0.02)
-        gray = gray[:, crop_margin:w2 - crop_margin]
+        gray = gray[margin_y:h2 - margin_y, margin_x:w2 - margin_x]
 
-        h2, w2 = gray.shape
-
-        # Heavy blur to smooth reflections
+        # Heavy blur to remove text and noise
         blur = cv2.GaussianBlur(gray, (31, 31), 0)
 
-        # LEFT border detection
-        left = 0
-        for x in range(w2 // 3):
-            if np.mean(blur[:, x]) < 200:
-                left = x
-                break
+        h3, w3 = blur.shape
 
-        # RIGHT border detection
-        right = 0
-        for x in range(w2 - 1, 2 * w2 // 3, -1):
-            if np.mean(blur[:, x]) < 200:
-                right = w2 - x
-                break
+        # Split halves
+        left_half = blur[:, :w3//2]
+        right_half = blur[:, w3//2:]
 
-        # TOP border detection
-        top = 0
-        for y in range(h2 // 3):
-            if np.mean(blur[y, :]) < 200:
-                top = y
-                break
+        top_half = blur[:h3//2, :]
+        bottom_half = blur[h3//2:, :]
 
-        # BOTTOM border detection
-        bottom = 0
-        for y in range(h2 - 1, 2 * h2 // 3, -1):
-            if np.mean(blur[y, :]) < 200:
-                bottom = h2 - y
-                break
+        # Mirror for comparison
+        right_mirror = np.fliplr(right_half)
+        bottom_mirror = np.flipud(bottom_half)
 
-        if min(left, right, top, bottom) == 0:
-            return {
-                "horizontal_ratio": 0.5,
-                "vertical_ratio": 0.5,
-                "confidence": 0.0
-            }
+        # Crop to equal size
+        min_w = min(left_half.shape[1], right_mirror.shape[1])
+        left_half = left_half[:, :min_w]
+        right_mirror = right_mirror[:, :min_w]
 
-        horizontal_ratio = min(left, right) / max(left, right)
-        vertical_ratio = min(top, bottom) / max(top, bottom)
+        min_h = min(top_half.shape[0], bottom_mirror.shape[0])
+        top_half = top_half[:min_h, :]
+        bottom_mirror = bottom_mirror[:min_h, :]
+
+        # Difference metrics
+        horizontal_diff = np.mean(np.abs(left_half - right_mirror))
+        vertical_diff = np.mean(np.abs(top_half - bottom_mirror))
+
+        # Normalize
+        horizontal_ratio = 1 - (horizontal_diff / 255)
+        vertical_ratio = 1 - (vertical_diff / 255)
+
+        horizontal_ratio = max(0, min(1, horizontal_ratio))
+        vertical_ratio = max(0, min(1, vertical_ratio))
 
         return {
             "horizontal_ratio": float(horizontal_ratio),
