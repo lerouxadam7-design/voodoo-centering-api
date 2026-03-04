@@ -2,62 +2,18 @@ import cv2
 import numpy as np
 
 
-class VoodooCornerEngine:
+class VoodooRawEngine:
 
     def __init__(self):
         pass
 
     # -----------------------------
-    # Order points
+    # Detect dominant card region
     # -----------------------------
-    def order_points(self, pts):
-        rect = np.zeros((4, 2), dtype="float32")
-
-        s = pts.sum(axis=1)
-        rect[0] = pts[np.argmin(s)]
-        rect[2] = pts[np.argmax(s)]
-
-        diff = np.diff(pts, axis=1)
-        rect[1] = pts[np.argmin(diff)]
-        rect[3] = pts[np.argmax(diff)]
-
-        return rect
-
-    # -----------------------------
-    # Warp card
-    # -----------------------------
-    def warp(self, image, pts):
-
-        rect = self.order_points(pts)
-        (tl, tr, br, bl) = rect
-
-        widthA = np.linalg.norm(br - bl)
-        widthB = np.linalg.norm(tr - tl)
-        maxWidth = int(max(widthA, widthB))
-
-        heightA = np.linalg.norm(tr - br)
-        heightB = np.linalg.norm(tl - bl)
-        maxHeight = int(max(heightA, heightB))
-
-        dst = np.array([
-            [0, 0],
-            [maxWidth - 1, 0],
-            [maxWidth - 1, maxHeight - 1],
-            [0, maxHeight - 1]
-        ], dtype="float32")
-
-        M = cv2.getPerspectiveTransform(rect, dst)
-        warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
-
-        return warped
-
-    # -----------------------------
-    # Detect card contour (solid background assumed)
-    # -----------------------------
-    def detect_card(self, image):
+    def detect_card_bbox(self, image):
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        blur = cv2.GaussianBlur(gray, (7, 7), 0)
 
         thresh = cv2.adaptiveThreshold(
             blur,
@@ -80,83 +36,107 @@ class VoodooCornerEngine:
         if not contours:
             return None
 
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        largest = max(contours, key=cv2.contourArea)
 
-        image_area = image.shape[0] * image.shape[1]
+        x, y, w, h = cv2.boundingRect(largest)
 
-        for cnt in contours:
-            if cv2.contourArea(cnt) < image_area * 0.40:
-                continue
-
-            peri = cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
-
-            if len(approx) == 4:
-                return approx.reshape(4, 2)
-
-        return None
+        return x, y, w, h
 
     # -----------------------------
-    # Corner integrity analysis
+    # Predictive symmetry centering
     # -----------------------------
-    def analyze_corners(self, warped):
+    def compute_centering(self, card_img):
 
-        h, w = warped.shape[:2]
+        gray = cv2.cvtColor(card_img, cv2.COLOR_BGR2GRAY)
 
-        # Define 4 corner patches
-        patch_size = int(min(h, w) * 0.12)
+        # remove outer noise margin
+        h, w = gray.shape
+        mx = int(w * 0.05)
+        my = int(h * 0.05)
+        gray = gray[my:h-my, mx:w-mx]
 
-        patches = [
-            warped[0:patch_size, 0:patch_size],                  # TL
-            warped[0:patch_size, w-patch_size:w],                # TR
-            warped[h-patch_size:h, w-patch_size:w],              # BR
-            warped[h-patch_size:h, 0:patch_size]                 # BL
+        blur = cv2.GaussianBlur(gray, (31, 31), 0)
+
+        h2, w2 = blur.shape
+
+        left = blur[:, :w2//2]
+        right = blur[:, w2//2:]
+        right = np.fliplr(right)
+
+        top = blur[:h2//2, :]
+        bottom = blur[h2//2:, :]
+        bottom = np.flipud(bottom)
+
+        min_w = min(left.shape[1], right.shape[1])
+        left = left[:, :min_w]
+        right = right[:, :min_w]
+
+        min_h = min(top.shape[0], bottom.shape[0])
+        top = top[:min_h, :]
+        bottom = bottom[:min_h, :]
+
+        h_diff = np.mean(np.abs(left - right))
+        v_diff = np.mean(np.abs(top - bottom))
+
+        h_ratio = 1 - (h_diff / 255)
+        v_ratio = 1 - (v_diff / 255)
+
+        return float(np.clip(h_ratio, 0, 1)), float(np.clip(v_ratio, 0, 1))
+
+    # -----------------------------
+    # Corner sharpness metric
+    # -----------------------------
+    def compute_corner_score(self, card_img):
+
+        h, w = card_img.shape[:2]
+        patch = int(min(h, w) * 0.12)
+
+        corners = [
+            card_img[0:patch, 0:patch],
+            card_img[0:patch, w-patch:w],
+            card_img[h-patch:h, w-patch:w],
+            card_img[h-patch:h, 0:patch]
         ]
 
         scores = []
 
-        for patch in patches:
-
-            gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-
-            # Edge strength
+        for c in corners:
+            gray = cv2.cvtColor(c, cv2.COLOR_BGR2GRAY)
             edges = cv2.Canny(gray, 50, 150)
-            edge_strength = np.mean(edges)
+            scores.append(np.mean(edges))
 
-            # Whitening detection (high brightness variance)
-            brightness_var = np.var(gray)
-
-            # Combine metrics
-            score = edge_strength - (brightness_var * 0.02)
-
-            scores.append(score)
-
-        # Normalize
-        scores = np.array(scores)
-        norm_score = np.clip(np.mean(scores) / 255, 0, 1)
-
-        return float(norm_score)
+        score = np.mean(scores) / 255
+        return float(np.clip(score, 0, 1))
 
     # -----------------------------
-    # Main entry
+    # Main API entry
     # -----------------------------
     def analyze_array(self, image_array):
 
-        target_width = 1200
+        target_width = 1000
         h, w = image_array.shape[:2]
         scale = target_width / w
         image = cv2.resize(image_array, (target_width, int(h * scale)))
 
-        pts = self.detect_card(image)
+        bbox = self.detect_card_bbox(image)
 
-        if pts is None:
-            return {"corner_score": 0.5, "confidence": 0.0}
+        if bbox is None:
+            return {
+                "horizontal_ratio": 0.5,
+                "vertical_ratio": 0.5,
+                "corner_score": 0.5,
+                "confidence": 0.0
+            }
 
-        warped = self.warp(image, pts)
+        x, y, w2, h2 = bbox
+        card = image[y:y+h2, x:x+w2]
 
-        corner_score = self.analyze_corners(warped)
+        h_ratio, v_ratio = self.compute_centering(card)
+        corner_score = self.compute_corner_score(card)
 
         return {
+            "horizontal_ratio": h_ratio,
+            "vertical_ratio": v_ratio,
             "corner_score": corner_score,
             "confidence": 1.0
         }
