@@ -31,8 +31,11 @@ class VoodooSlabCentering:
 
         h, w = gray.shape
 
-        # Strong threshold for white
-        _, thresh = cv2.threshold(gray, 215, 255, cv2.THRESH_BINARY)
+        # Dynamic threshold based on brightest region
+        bright_percentile = np.percentile(gray, 95)
+        threshold_value = bright_percentile - 5
+
+        _, thresh = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
 
         # LEFT
         left = 0
