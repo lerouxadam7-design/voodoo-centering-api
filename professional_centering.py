@@ -2,14 +2,18 @@ import cv2
 import numpy as np
 
 
+# ============================================================
+# RAW FULL-CARD FEATURE ENGINE
+# ============================================================
+
 class VoodooRawEngine:
 
     def __init__(self):
         pass
 
-    # -------------------------------------------------
-    # Detect dominant card region (solid background)
-    # -------------------------------------------------
+    # ---------------------------------------------------------
+    # Detect dominant card bounding box (solid background assumed)
+    # ---------------------------------------------------------
     def detect_card_bbox(self, image):
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -45,9 +49,9 @@ class VoodooRawEngine:
 
         return x, y, w, h
 
-    # -------------------------------------------------
-    # Predictive symmetry centering
-    # -------------------------------------------------
+    # ---------------------------------------------------------
+    # Predictive centering (symmetry-based)
+    # ---------------------------------------------------------
     def compute_centering(self, card_img):
 
         gray = cv2.cvtColor(card_img, cv2.COLOR_BGR2GRAY)
@@ -83,39 +87,9 @@ class VoodooRawEngine:
 
         return float(np.clip(h_ratio, 0, 1)), float(np.clip(v_ratio, 0, 1))
 
-    # -------------------------------------------------
-    # Corner sharpness metric
-    # -------------------------------------------------
-    def compute_corner_score(self, card_img):
-
-        h, w = card_img.shape[:2]
-        patch = int(min(h, w) * 0.12)
-
-        corners = [
-            card_img[0:patch, 0:patch],
-            card_img[0:patch, w-patch:w],
-            card_img[h-patch:h, w-patch:w],
-            card_img[h-patch:h, 0:patch]
-        ]
-
-        scores = []
-
-        for c in corners:
-            gray = cv2.cvtColor(c, cv2.COLOR_BGR2GRAY)
-            blur = cv2.GaussianBlur(gray, (15, 15), 0)
-
-            grad_x = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
-            grad_y = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
-
-            magnitude = np.sqrt(grad_x**2 + grad_y**2)
-            scores.append(np.mean(magnitude))
-
-        score = np.mean(scores)
-        return float(np.clip(score / 100, 0, 1))
-
-    # -------------------------------------------------
-    # Edge integrity metric
-    # -------------------------------------------------
+    # ---------------------------------------------------------
+    # Edge integrity feature
+    # ---------------------------------------------------------
     def compute_edge_score(self, card_img):
 
         h, w = card_img.shape[:2]
@@ -138,15 +112,18 @@ class VoodooRawEngine:
             edges = cv2.Canny(blur, 50, 150)
             edge_density = np.mean(edges)
 
-            score = edge_density - (variance * 0.01)
+            edge_norm = edge_density / 255
+            var_norm = variance / (255**2)
+
+            score = (edge_norm * 0.7) - (var_norm * 0.3)
             scores.append(score)
 
-        normalized = np.clip(np.mean(scores) / 255, 0, 1)
+        normalized = np.clip(np.mean(scores), 0, 1)
         return float(normalized)
 
-    # -------------------------------------------------
-    # Main entry
-    # -------------------------------------------------
+    # ---------------------------------------------------------
+    # Main RAW card analysis
+    # ---------------------------------------------------------
     def analyze_array(self, image_array):
 
         target_width = 1000
@@ -160,7 +137,6 @@ class VoodooRawEngine:
             return {
                 "horizontal_ratio": 0.5,
                 "vertical_ratio": 0.5,
-                "corner_score": 0.5,
                 "edge_score": 0.5,
                 "confidence": 0.0
             }
@@ -169,13 +145,80 @@ class VoodooRawEngine:
         card = image[y:y+h2, x:x+w2]
 
         h_ratio, v_ratio = self.compute_centering(card)
-        corner_score = self.compute_corner_score(card)
         edge_score = self.compute_edge_score(card)
 
         return {
             "horizontal_ratio": h_ratio,
             "vertical_ratio": v_ratio,
-            "corner_score": corner_score,
             "edge_score": edge_score,
+            "confidence": 1.0
+        }
+
+
+# ============================================================
+# CLOSE-UP CORNER ENGINE
+# ============================================================
+
+class VoodooCornerCloseupEngine:
+
+    def __init__(self):
+        pass
+
+    def analyze_array(self, image_array):
+
+        target_width = 600
+        h, w = image_array.shape[:2]
+        scale = target_width / w
+        image = cv2.resize(image_array, (target_width, int(h * scale)))
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (9, 9), 0)
+
+        grad_x = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
+
+        magnitude = np.sqrt(grad_x**2 + grad_y**2)
+
+        edges = cv2.Canny(blur, 50, 150)
+
+        lines = cv2.HoughLinesP(
+            edges,
+            1,
+            np.pi / 180,
+            threshold=50,
+            minLineLength=50,
+            maxLineGap=10
+        )
+
+        angle_score = 0.5
+
+        if lines is not None and len(lines) >= 2:
+
+            angles = []
+
+            for line in lines[:5]:
+                x1, y1, x2, y2 = line[0]
+                angle = np.degrees(np.arctan2((y2 - y1), (x2 - x1)))
+                angles.append(abs(angle))
+
+            if len(angles) >= 2:
+                angle_diff = abs(angles[0] - angles[1])
+                angle_score = 1 - min(abs(90 - angle_diff) / 90, 1)
+
+        brightness_var = np.var(gray)
+        whiten_score = np.clip(1 - (brightness_var / 5000), 0, 1)
+
+        smooth_score = np.clip(1 - (np.mean(magnitude) / 200), 0, 1)
+
+        final_score = np.clip(
+            (angle_score * 0.4) +
+            (whiten_score * 0.3) +
+            (smooth_score * 0.3),
+            0,
+            1
+        )
+
+        return {
+            "corner_score": float(final_score),
             "confidence": 1.0
         }
