@@ -74,24 +74,7 @@ class VoodooSlabCentering:
     # --------------------------------
     # Main entry
     # --------------------------------
-    def analyze_array(self, image_array):
-
-        target_width = 1000
-        h, w = image_array.shape[:2]
-        scale = target_width / w
-        image = cv2.resize(image_array, (target_width, int(h * scale)))
-
-        cropped = self.crop_slab(image)
-        gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
-
-        # Return grayscale statistics
-        return {
-            "mean_gray": float(np.mean(gray)),
-            "min_gray": float(np.min(gray)),
-            "max_gray": float(np.max(gray)),
-            "confidence": 1.0
-        }
-
+   
         horizontal_ratio = min(left, right) / max(left, right)
         vertical_ratio   = min(top, bottom) / max(top, bottom)
 
