@@ -7,9 +7,9 @@ class VoodooRawEngine:
     def __init__(self):
         pass
 
-    # -----------------------------
-    # Detect dominant card region
-    # -----------------------------
+    # -------------------------------------------------
+    # Detect dominant card region (solid background)
+    # -------------------------------------------------
     def detect_card_bbox(self, image):
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -37,35 +37,35 @@ class VoodooRawEngine:
             return None
 
         largest = max(contours, key=cv2.contourArea)
-
         x, y, w, h = cv2.boundingRect(largest)
+
+        image_area = image.shape[0] * image.shape[1]
+        if w * h < image_area * 0.30:
+            return None
 
         return x, y, w, h
 
-    # -----------------------------
+    # -------------------------------------------------
     # Predictive symmetry centering
-    # -----------------------------
+    # -------------------------------------------------
     def compute_centering(self, card_img):
 
         gray = cv2.cvtColor(card_img, cv2.COLOR_BGR2GRAY)
 
-        # remove outer noise margin
         h, w = gray.shape
         mx = int(w * 0.05)
         my = int(h * 0.05)
-        gray = gray[my:h-my, mx:w-mx]
 
+        gray = gray[my:h-my, mx:w-mx]
         blur = cv2.GaussianBlur(gray, (31, 31), 0)
 
         h2, w2 = blur.shape
 
         left = blur[:, :w2//2]
-        right = blur[:, w2//2:]
-        right = np.fliplr(right)
+        right = np.fliplr(blur[:, w2//2:])
 
         top = blur[:h2//2, :]
-        bottom = blur[h2//2:, :]
-        bottom = np.flipud(bottom)
+        bottom = np.flipud(blur[h2//2:, :])
 
         min_w = min(left.shape[1], right.shape[1])
         left = left[:, :min_w]
@@ -83,9 +83,9 @@ class VoodooRawEngine:
 
         return float(np.clip(h_ratio, 0, 1)), float(np.clip(v_ratio, 0, 1))
 
-    # -----------------------------
+    # -------------------------------------------------
     # Corner sharpness metric
-    # -----------------------------
+    # -------------------------------------------------
     def compute_corner_score(self, card_img):
 
         h, w = card_img.shape[:2]
@@ -102,15 +102,51 @@ class VoodooRawEngine:
 
         for c in corners:
             gray = cv2.cvtColor(c, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray, 50, 150)
-            scores.append(np.mean(edges))
+            blur = cv2.GaussianBlur(gray, (15, 15), 0)
 
-        score = np.mean(scores) / 255
-        return float(np.clip(score, 0, 1))
+            grad_x = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
+            grad_y = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
 
-    # -----------------------------
-    # Main API entry
-    # -----------------------------
+            magnitude = np.sqrt(grad_x**2 + grad_y**2)
+            scores.append(np.mean(magnitude))
+
+        score = np.mean(scores)
+        return float(np.clip(score / 100, 0, 1))
+
+    # -------------------------------------------------
+    # Edge integrity metric
+    # -------------------------------------------------
+    def compute_edge_score(self, card_img):
+
+        h, w = card_img.shape[:2]
+        strip = int(min(h, w) * 0.05)
+
+        strips = [
+            card_img[0:strip, :],
+            card_img[h-strip:h, :],
+            card_img[:, 0:strip],
+            card_img[:, w-strip:w]
+        ]
+
+        scores = []
+
+        for s in strips:
+            gray = cv2.cvtColor(s, cv2.COLOR_BGR2GRAY)
+            blur = cv2.GaussianBlur(gray, (9, 9), 0)
+
+            variance = np.var(blur)
+            edges = cv2.Canny(blur, 50, 150)
+            edge_density = np.mean(edges)
+
+            score = edge_density - (variance * 0.01)
+            scores.append(score)
+
+        normalized = np.clip(np.mean(scores) / 255, 0, 1)
+        return float(normalized)
+
+    # -------------------------------------------------
+    # Main entry
+    # -------------------------------------------------
     def analyze_array(self, image_array):
 
         target_width = 1000
@@ -125,6 +161,7 @@ class VoodooRawEngine:
                 "horizontal_ratio": 0.5,
                 "vertical_ratio": 0.5,
                 "corner_score": 0.5,
+                "edge_score": 0.5,
                 "confidence": 0.0
             }
 
@@ -133,10 +170,12 @@ class VoodooRawEngine:
 
         h_ratio, v_ratio = self.compute_centering(card)
         corner_score = self.compute_corner_score(card)
+        edge_score = self.compute_edge_score(card)
 
         return {
             "horizontal_ratio": h_ratio,
             "vertical_ratio": v_ratio,
             "corner_score": corner_score,
+            "edge_score": edge_score,
             "confidence": 1.0
         }
