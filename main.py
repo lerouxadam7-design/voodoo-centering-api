@@ -1,11 +1,11 @@
 from fastapi import FastAPI, File, UploadFile
 import numpy as np
 import cv2
-from professional_centering import VoodooSlabCentering
+from professional_centering import VoodooRawCardCentering
 
 app = FastAPI()
 
-centering_engine = VoodooSlabCentering()
+centering_engine = VoodooRawCardCentering()
 
 
 @app.post("/analyze")
