@@ -2,50 +2,121 @@ import cv2
 import numpy as np
 
 
-class VoodooSlabCentering:
+class VoodooRawCardCentering:
 
     def __init__(self):
         pass
 
     # --------------------------------
-    # Crop slab edges deterministically
+    # Order points consistently
     # --------------------------------
-    def detect_border_thickness(self, gray):
+    def order_points(self, pts):
+        rect = np.zeros((4, 2), dtype="float32")
+
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)]
+        rect[2] = pts[np.argmax(s)]
+
+        diff = np.diff(pts, axis=1)
+        rect[1] = pts[np.argmin(diff)]
+        rect[3] = pts[np.argmax(diff)]
+
+        return rect
+
+    # --------------------------------
+    # Perspective warp
+    # --------------------------------
+    def warp(self, image, pts):
+
+        rect = self.order_points(pts)
+        (tl, tr, br, bl) = rect
+
+        widthA = np.linalg.norm(br - bl)
+        widthB = np.linalg.norm(tr - tl)
+        maxWidth = int(max(widthA, widthB))
+
+        heightA = np.linalg.norm(tr - br)
+        heightB = np.linalg.norm(tl - bl)
+        maxHeight = int(max(heightA, heightB))
+
+        dst = np.array([
+            [0, 0],
+            [maxWidth - 1, 0],
+            [maxWidth - 1, maxHeight - 1],
+            [0, maxHeight - 1]
+        ], dtype="float32")
+
+        M = cv2.getPerspectiveTransform(rect, dst)
+        warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+
+        return warped
+
+    # --------------------------------
+    # Detect card contour
+    # --------------------------------
+    def detect_card(self, image):
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        edges = cv2.Canny(blur, 50, 150)
+
+        contours, _ = cv2.findContours(
+            edges,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        if not contours:
+            return None
+
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+        for cnt in contours:
+
+            area = cv2.contourArea(cnt)
+
+            if area < image.shape[0] * image.shape[1] * 0.20:
+                continue
+
+            peri = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+
+            if len(approx) == 4:
+                return approx.reshape(4, 2)
+
+        return None
+
+    # --------------------------------
+    # Detect white border thickness
+    # --------------------------------
+    def detect_white_border(self, gray):
 
         h, w = gray.shape
 
-        # Smooth heavily to remove design noise
         blur = cv2.GaussianBlur(gray, (25, 25), 0)
 
-        # LEFT border
         left = 0
         for x in range(w // 3):
-            column_mean = np.mean(blur[:, x])
-            if column_mean < 200:  # leaving white region
+            if np.mean(blur[:, x]) < 200:
                 left = x
                 break
 
-        # RIGHT border
         right = 0
         for x in range(w - 1, 2 * w // 3, -1):
-            column_mean = np.mean(blur[:, x])
-            if column_mean < 200:
+            if np.mean(blur[:, x]) < 200:
                 right = w - x
                 break
 
-        # TOP border
         top = 0
         for y in range(h // 3):
-            row_mean = np.mean(blur[y, :])
-            if row_mean < 200:
+            if np.mean(blur[y, :]) < 200:
                 top = y
                 break
 
-        # BOTTOM border
         bottom = 0
         for y in range(h - 1, 2 * h // 3, -1):
-            row_mean = np.mean(blur[y, :])
-            if row_mean < 200:
+            if np.mean(blur[y, :]) < 200:
                 bottom = h - y
                 break
 
@@ -56,18 +127,25 @@ class VoodooSlabCentering:
     # --------------------------------
     def analyze_array(self, image_array):
 
-        # Downscale for stability
-        target_width = 1000
+        target_width = 1200
         h, w = image_array.shape[:2]
         scale = target_width / w
         image = cv2.resize(image_array, (target_width, int(h * scale)))
 
-        # Remove slab border
-        cropped = self.crop_slab(image)
+        pts = self.detect_card(image)
 
-        gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+        if pts is None:
+            return {
+                "horizontal_ratio": 0.5,
+                "vertical_ratio": 0.5,
+                "confidence": 0.0
+            }
 
-        left, right, top, bottom = self.detect_border_thickness(gray)
+        warped = self.warp(image, pts)
+
+        gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+
+        left, right, top, bottom = self.detect_white_border(gray)
 
         if min(left, right, top, bottom) == 0:
             return {
