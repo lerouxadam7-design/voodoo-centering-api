@@ -10,63 +10,42 @@ class VoodooSlabCentering:
     # --------------------------------
     # Crop slab edges deterministically
     # --------------------------------
-    def crop_slab(self, image):
-
-        h, w = image.shape[:2]
-
-        # Slab border crop (consistent framing assumption)
-        crop_pct = 0.12
-
-        x_start = int(w * crop_pct)
-        x_end   = int(w * (1 - crop_pct))
-        y_start = int(h * crop_pct)
-        y_end   = int(h * (1 - crop_pct))
-
-        return image[y_start:y_end, x_start:x_end]
-
-    # --------------------------------
-    # Detect border thickness via gradient scan
-    # --------------------------------
     def detect_border_thickness(self, gray):
 
         h, w = gray.shape
 
-        # Compute vertical gradient
-        grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-
-        abs_grad_x = np.abs(grad_x)
-        abs_grad_y = np.abs(grad_y)
+        # Smooth heavily to remove design noise
+        blur = cv2.GaussianBlur(gray, (25, 25), 0)
 
         # LEFT border
         left = 0
         for x in range(w // 3):
-            column_strength = np.mean(abs_grad_x[:, x])
-            if column_strength > 20:
+            column_mean = np.mean(blur[:, x])
+            if column_mean < 200:  # leaving white region
                 left = x
                 break
 
         # RIGHT border
         right = 0
         for x in range(w - 1, 2 * w // 3, -1):
-            column_strength = np.mean(abs_grad_x[:, x])
-            if column_strength > 20:
+            column_mean = np.mean(blur[:, x])
+            if column_mean < 200:
                 right = w - x
                 break
 
         # TOP border
         top = 0
         for y in range(h // 3):
-            row_strength = np.mean(abs_grad_y[y, :])
-            if row_strength > 20:
+            row_mean = np.mean(blur[y, :])
+            if row_mean < 200:
                 top = y
                 break
 
         # BOTTOM border
         bottom = 0
         for y in range(h - 1, 2 * h // 3, -1):
-            row_strength = np.mean(abs_grad_y[y, :])
-            if row_strength > 20:
+            row_mean = np.mean(blur[y, :])
+            if row_mean < 200:
                 bottom = h - y
                 break
 
