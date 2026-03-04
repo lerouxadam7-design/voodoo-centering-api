@@ -127,17 +127,17 @@ class VoodooRawCardCentering:
     # --------------------------------
     def analyze_array(self, image_array):
 
-    target_width = 1200
-    h, w = image_array.shape[:2]
-    scale = target_width / w
-    image = cv2.resize(image_array, (target_width, int(h * scale)))
+        target_width = 1200
+        h, w = image_array.shape[:2]
+        scale = target_width / w
+        image = cv2.resize(image_array, (target_width, int(h * scale)))
 
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    edges = cv2.Canny(gray, 50, 150)
+        edges = cv2.Canny(gray, 50, 150)
 
-    return {
-        "mean_gray": float(np.mean(gray)),
-        "edge_mean": float(np.mean(edges)),
-        "confidence": 1.0
-    }
+        return {
+            "mean_gray": float(np.mean(gray)),
+            "edge_mean": float(np.mean(edges)),
+            "confidence": 1.0
+        }
