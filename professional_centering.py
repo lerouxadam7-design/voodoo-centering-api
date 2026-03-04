@@ -54,7 +54,7 @@ class VoodooRawCardCentering:
     # --------------------------------
     # Detect card contour
     # --------------------------------
-        def detect_card(self, image):
+    def detect_card(self, image):
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
