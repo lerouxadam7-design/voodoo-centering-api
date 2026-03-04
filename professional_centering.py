@@ -8,7 +8,7 @@ class VoodooRawCardCentering:
         pass
 
     # -----------------------------
-    # Order 4 points consistently
+    # Order points
     # -----------------------------
     def order_points(self, pts):
         rect = np.zeros((4, 2), dtype="float32")
@@ -24,7 +24,7 @@ class VoodooRawCardCentering:
         return rect
 
     # -----------------------------
-    # Perspective warp
+    # Warp card to rectangle
     # -----------------------------
     def warp(self, image, pts):
 
@@ -52,12 +52,13 @@ class VoodooRawCardCentering:
         return warped
 
     # -----------------------------
-    # Detect card contour (robust)
+    # Detect card contour
     # -----------------------------
     def detect_card(self, image):
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (11, 11), 0)
+
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
         thresh = cv2.adaptiveThreshold(
             blur,
@@ -88,7 +89,7 @@ class VoodooRawCardCentering:
 
             area = cv2.contourArea(cnt)
 
-            if area < image_area * 0.25:
+            if area < image_area * 0.40:
                 continue
 
             peri = cv2.arcLength(cnt, True)
@@ -105,6 +106,7 @@ class VoodooRawCardCentering:
     def detect_white_border(self, gray):
 
         h, w = gray.shape
+
         blur = cv2.GaussianBlur(gray, (25, 25), 0)
 
         left = 0
