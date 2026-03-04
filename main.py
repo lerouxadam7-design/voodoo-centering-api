@@ -8,11 +8,6 @@ app = FastAPI()
 centering_engine = VoodooSlabCentering()
 
 @app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
-
-    contents = await file.read()
-    nparr = np.frombuffer(contents, np.uint8)
-    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
     if image is None:
         return {"error": "Invalid image"}
