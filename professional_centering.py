@@ -127,38 +127,17 @@ class VoodooRawCardCentering:
     # --------------------------------
     def analyze_array(self, image_array):
 
-        target_width = 1200
-        h, w = image_array.shape[:2]
-        scale = target_width / w
-        image = cv2.resize(image_array, (target_width, int(h * scale)))
+    target_width = 1200
+    h, w = image_array.shape[:2]
+    scale = target_width / w
+    image = cv2.resize(image_array, (target_width, int(h * scale)))
 
-        pts = self.detect_card(image)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        if pts is None:
-            return {
-                "horizontal_ratio": 0.5,
-                "vertical_ratio": 0.5,
-                "confidence": 0.0
-            }
+    edges = cv2.Canny(gray, 50, 150)
 
-        warped = self.warp(image, pts)
-
-        gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-
-        left, right, top, bottom = self.detect_white_border(gray)
-
-        if min(left, right, top, bottom) == 0:
-            return {
-                "horizontal_ratio": 0.5,
-                "vertical_ratio": 0.5,
-                "confidence": 0.0
-            }
-
-        horizontal_ratio = min(left, right) / max(left, right)
-        vertical_ratio   = min(top, bottom) / max(top, bottom)
-
-        return {
-            "horizontal_ratio": float(horizontal_ratio),
-            "vertical_ratio": float(vertical_ratio),
-            "confidence": 1.0
-        }
+    return {
+        "mean_gray": float(np.mean(gray)),
+        "edge_mean": float(np.mean(edges)),
+        "confidence": 1.0
+    }
