@@ -2,66 +2,161 @@ import cv2
 import numpy as np
 
 
-class VoodooPredictiveCentering:
+class VoodooCornerEngine:
 
     def __init__(self):
         pass
 
+    # -----------------------------
+    # Order points
+    # -----------------------------
+    def order_points(self, pts):
+        rect = np.zeros((4, 2), dtype="float32")
+
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)]
+        rect[2] = pts[np.argmax(s)]
+
+        diff = np.diff(pts, axis=1)
+        rect[1] = pts[np.argmin(diff)]
+        rect[3] = pts[np.argmax(diff)]
+
+        return rect
+
+    # -----------------------------
+    # Warp card
+    # -----------------------------
+    def warp(self, image, pts):
+
+        rect = self.order_points(pts)
+        (tl, tr, br, bl) = rect
+
+        widthA = np.linalg.norm(br - bl)
+        widthB = np.linalg.norm(tr - tl)
+        maxWidth = int(max(widthA, widthB))
+
+        heightA = np.linalg.norm(tr - br)
+        heightB = np.linalg.norm(tl - bl)
+        maxHeight = int(max(heightA, heightB))
+
+        dst = np.array([
+            [0, 0],
+            [maxWidth - 1, 0],
+            [maxWidth - 1, maxHeight - 1],
+            [0, maxHeight - 1]
+        ], dtype="float32")
+
+        M = cv2.getPerspectiveTransform(rect, dst)
+        warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+
+        return warped
+
+    # -----------------------------
+    # Detect card contour (solid background assumed)
+    # -----------------------------
+    def detect_card(self, image):
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        thresh = cv2.adaptiveThreshold(
+            blur,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            51,
+            5
+        )
+
+        kernel = np.ones((5, 5), np.uint8)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+
+        contours, _ = cv2.findContours(
+            thresh,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        if not contours:
+            return None
+
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+        image_area = image.shape[0] * image.shape[1]
+
+        for cnt in contours:
+            if cv2.contourArea(cnt) < image_area * 0.40:
+                continue
+
+            peri = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+
+            if len(approx) == 4:
+                return approx.reshape(4, 2)
+
+        return None
+
+    # -----------------------------
+    # Corner integrity analysis
+    # -----------------------------
+    def analyze_corners(self, warped):
+
+        h, w = warped.shape[:2]
+
+        # Define 4 corner patches
+        patch_size = int(min(h, w) * 0.12)
+
+        patches = [
+            warped[0:patch_size, 0:patch_size],                  # TL
+            warped[0:patch_size, w-patch_size:w],                # TR
+            warped[h-patch_size:h, w-patch_size:w],              # BR
+            warped[h-patch_size:h, 0:patch_size]                 # BL
+        ]
+
+        scores = []
+
+        for patch in patches:
+
+            gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+
+            # Edge strength
+            edges = cv2.Canny(gray, 50, 150)
+            edge_strength = np.mean(edges)
+
+            # Whitening detection (high brightness variance)
+            brightness_var = np.var(gray)
+
+            # Combine metrics
+            score = edge_strength - (brightness_var * 0.02)
+
+            scores.append(score)
+
+        # Normalize
+        scores = np.array(scores)
+        norm_score = np.clip(np.mean(scores) / 255, 0, 1)
+
+        return float(norm_score)
+
+    # -----------------------------
+    # Main entry
+    # -----------------------------
     def analyze_array(self, image_array):
 
-        # Downscale for consistency
-        target_width = 800
+        target_width = 1200
         h, w = image_array.shape[:2]
         scale = target_width / w
         image = cv2.resize(image_array, (target_width, int(h * scale)))
 
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        pts = self.detect_card(image)
 
-        # Remove outer 5% to reduce background influence
-        h2, w2 = gray.shape
-        margin_x = int(w2 * 0.05)
-        margin_y = int(h2 * 0.05)
+        if pts is None:
+            return {"corner_score": 0.5, "confidence": 0.0}
 
-        gray = gray[margin_y:h2 - margin_y, margin_x:w2 - margin_x]
+        warped = self.warp(image, pts)
 
-        # Heavy blur to remove text and noise
-        blur = cv2.GaussianBlur(gray, (31, 31), 0)
-
-        h3, w3 = blur.shape
-
-        # Split halves
-        left_half = blur[:, :w3//2]
-        right_half = blur[:, w3//2:]
-
-        top_half = blur[:h3//2, :]
-        bottom_half = blur[h3//2:, :]
-
-        # Mirror for comparison
-        right_mirror = np.fliplr(right_half)
-        bottom_mirror = np.flipud(bottom_half)
-
-        # Crop to equal size
-        min_w = min(left_half.shape[1], right_mirror.shape[1])
-        left_half = left_half[:, :min_w]
-        right_mirror = right_mirror[:, :min_w]
-
-        min_h = min(top_half.shape[0], bottom_mirror.shape[0])
-        top_half = top_half[:min_h, :]
-        bottom_mirror = bottom_mirror[:min_h, :]
-
-        # Difference metrics
-        horizontal_diff = np.mean(np.abs(left_half - right_mirror))
-        vertical_diff = np.mean(np.abs(top_half - bottom_mirror))
-
-        # Normalize
-        horizontal_ratio = 1 - (horizontal_diff / 255)
-        vertical_ratio = 1 - (vertical_diff / 255)
-
-        horizontal_ratio = max(0, min(1, horizontal_ratio))
-        vertical_ratio = max(0, min(1, vertical_ratio))
+        corner_score = self.analyze_corners(warped)
 
         return {
-            "horizontal_ratio": float(horizontal_ratio),
-            "vertical_ratio": float(vertical_ratio),
+            "corner_score": corner_score,
             "confidence": 1.0
         }
