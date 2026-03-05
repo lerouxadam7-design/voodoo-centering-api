@@ -3,7 +3,7 @@ import numpy as np
 
 
 # ============================================================
-# RAW FULL-CARD FEATURE ENGINE
+# RAW FULL CARD FEATURE ENGINE
 # ============================================================
 
 class VoodooRawEngine:
@@ -12,7 +12,7 @@ class VoodooRawEngine:
         pass
 
     # ---------------------------------------------------------
-    # Detect dominant card bounding box (solid background assumed)
+    # Detect dominant card bounding box (solid background)
     # ---------------------------------------------------------
     def detect_card_bbox(self, image):
 
@@ -50,7 +50,7 @@ class VoodooRawEngine:
         return x, y, w, h
 
     # ---------------------------------------------------------
-    # Predictive centering (symmetry-based)
+    # Predictive centering (symmetry based)
     # ---------------------------------------------------------
     def compute_centering(self, card_img):
 
@@ -122,7 +122,7 @@ class VoodooRawEngine:
         return float(normalized)
 
     # ---------------------------------------------------------
-    # Main RAW card analysis
+    # Main RAW analysis
     # ---------------------------------------------------------
     def analyze_array(self, image_array):
 
@@ -156,7 +156,7 @@ class VoodooRawEngine:
 
 
 # ============================================================
-# CLOSE-UP CORNER ENGINE
+# CLOSE-UP CORNER GEOMETRY ENGINE
 # ============================================================
 
 class VoodooCornerCloseupEngine:
@@ -187,14 +187,7 @@ class VoodooCornerCloseupEngine:
 
         largest = max(contours, key=cv2.contourArea)
 
-        # Fit polygon to contour
-        peri = cv2.arcLength(largest, True)
-        approx = cv2.approxPolyDP(largest, 0.01 * peri, True)
-
-        if len(approx) < 2:
-            return {"corner_score": 0.5, "confidence": 0.0}
-
-        # Estimate curvature by analyzing contour smoothness
+        # Compute curvature along contour
         curvature_values = []
 
         for i in range(1, len(largest) - 1):
@@ -205,28 +198,19 @@ class VoodooCornerCloseupEngine:
             v1 = p_curr - p_prev
             v2 = p_next - p_curr
 
+            denom = (np.linalg.norm(v1) * np.linalg.norm(v2)) + 1e-6
             angle = np.arccos(
-                np.clip(
-                    np.dot(v1, v2) /
-                    (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-6),
-                    -1,
-                    1
-                )
+                np.clip(np.dot(v1, v2) / denom, -1, 1)
             )
 
             curvature_values.append(angle)
 
         avg_curvature = np.mean(curvature_values)
 
-        # Rounded corners have lower curvature concentration
-        # Sharp corners have high curvature spike
-
+        # Normalize curvature to 0-1
         corner_score = np.clip(avg_curvature / np.pi, 0, 1)
 
         return {
             "corner_score": float(corner_score),
-            "confidence": 1.0
-        }
-            "corner_score": float(final_score),
             "confidence": 1.0
         }
