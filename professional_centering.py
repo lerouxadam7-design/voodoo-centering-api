@@ -176,13 +176,25 @@ class VoodooCornerCloseupEngine:
 
         edges = cv2.Canny(blur, 75, 200)
 
+        # Mask only outer boundary region (ignore interior design lines)
+        mask = np.zeros_like(edges)
+
+        border = int(min(h, w) * 0.20)
+
+        mask[:border, :] = 255
+        mask[:, :border] = 255
+        mask[h-border:h, :] = 255
+        mask[:, w-border:w] = 255
+
+        edges_masked = cv2.bitwise_and(edges, mask)
+
         lines = cv2.HoughLinesP(
-            edges,
+            edges_masked,
             1,
             np.pi / 180,
-            threshold=60,
-            minLineLength=100,
-            maxLineGap=15
+            threshold=50,
+            minLineLength=80,
+            maxLineGap=10
         )
 
         if lines is None or len(lines) < 2:
