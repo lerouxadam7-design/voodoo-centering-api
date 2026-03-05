@@ -109,7 +109,7 @@ class VoodooRawEngine:
             blur = cv2.GaussianBlur(gray, (9, 9), 0)
 
             variance = np.var(blur)
-            edges = cv2.Canny(blur, 50, 150)
+            edges = cv2.Canny(blur, 75, 200)
             edge_density = np.mean(edges)
 
             edge_norm = edge_density / 255
@@ -172,50 +172,51 @@ class VoodooCornerCloseupEngine:
         image = cv2.resize(image_array, (target_width, int(h * scale)))
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (7, 7), 0)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        edges = cv2.Canny(blur, 50, 150)
+        edges = cv2.Canny(blur, 75, 200)
 
-        contours, _ = cv2.findContours(
+        lines = cv2.HoughLinesP(
             edges,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_NONE
+            1,
+            np.pi / 180,
+            threshold=60,
+            minLineLength=100,
+            maxLineGap=15
         )
 
-        if not contours:
+        if lines is None or len(lines) < 2:
             return {"corner_score": 0.5, "confidence": 0.0}
 
-        largest = max(contours, key=cv2.contourArea)
+        angles = []
+        lengths = []
 
-        # Compute curvature at each contour point
-        curvatures = []
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+            angle = np.degrees(np.arctan2((y2 - y1), (x2 - x1)))
+            angles.append(angle)
+            lengths.append(length)
 
-        for i in range(1, len(largest) - 1):
-            p_prev = largest[i - 1][0]
-            p_curr = largest[i][0]
-            p_next = largest[i + 1][0]
+        sorted_idx = np.argsort(lengths)[::-1]
+        angles = np.array(angles)[sorted_idx]
 
-            v1 = p_curr - p_prev
-            v2 = p_next - p_curr
-
-            denom = (np.linalg.norm(v1) * np.linalg.norm(v2)) + 1e-6
-            angle = np.arccos(
-                np.clip(np.dot(v1, v2) / denom, -1, 1)
-            )
-
-            curvatures.append(angle)
-
-        curvatures = np.array(curvatures)
-
-        if len(curvatures) == 0:
+        if len(angles) < 2:
             return {"corner_score": 0.5, "confidence": 0.0}
 
-        # Use maximum curvature spike (corner tip sharpness)
-        max_curvature = np.max(curvatures)
+        angle1 = angles[0]
+        angle2 = angles[1]
 
-        corner_score = np.clip(max_curvature / np.pi, 0, 1)
+        angle_diff = abs(angle1 - angle2)
+
+        if angle_diff > 180:
+            angle_diff = 360 - angle_diff
+
+        deviation = abs(90 - angle_diff)
+
+        corner_score = 1 - min(deviation / 90, 1)
 
         return {
-            "corner_score": float(corner_score),
+            "corner_score": float(np.clip(corner_score, 0, 1)),
             "confidence": 1.0
         }
