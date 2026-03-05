@@ -172,53 +172,61 @@ class VoodooCornerCloseupEngine:
         image = cv2.resize(image_array, (target_width, int(h * scale)))
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (9, 9), 0)
-
-        grad_x = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
-
-        magnitude = np.sqrt(grad_x**2 + grad_y**2)
+        blur = cv2.GaussianBlur(gray, (7, 7), 0)
 
         edges = cv2.Canny(blur, 50, 150)
 
-        lines = cv2.HoughLinesP(
+        contours, _ = cv2.findContours(
             edges,
-            1,
-            np.pi / 180,
-            threshold=50,
-            minLineLength=50,
-            maxLineGap=10
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_NONE
         )
 
-        angle_score = 0.5
+        if not contours:
+            return {"corner_score": 0.5, "confidence": 0.0}
 
-        if lines is not None and len(lines) >= 2:
+        largest = max(contours, key=cv2.contourArea)
 
-            angles = []
+        # Fit polygon to contour
+        peri = cv2.arcLength(largest, True)
+        approx = cv2.approxPolyDP(largest, 0.01 * peri, True)
 
-            for line in lines[:5]:
-                x1, y1, x2, y2 = line[0]
-                angle = np.degrees(np.arctan2((y2 - y1), (x2 - x1)))
-                angles.append(abs(angle))
+        if len(approx) < 2:
+            return {"corner_score": 0.5, "confidence": 0.0}
 
-            if len(angles) >= 2:
-                angle_diff = abs(angles[0] - angles[1])
-                angle_score = 1 - min(abs(90 - angle_diff) / 90, 1)
+        # Estimate curvature by analyzing contour smoothness
+        curvature_values = []
 
-        brightness_var = np.var(gray)
-        whiten_score = np.clip(1 - (brightness_var / 5000), 0, 1)
+        for i in range(1, len(largest) - 1):
+            p_prev = largest[i - 1][0]
+            p_curr = largest[i][0]
+            p_next = largest[i + 1][0]
 
-        smooth_score = np.clip(1 - (np.mean(magnitude) / 200), 0, 1)
+            v1 = p_curr - p_prev
+            v2 = p_next - p_curr
 
-        final_score = np.clip(
-            (angle_score * 0.4) +
-            (whiten_score * 0.3) +
-            (smooth_score * 0.3),
-            0,
-            1
-        )
+            angle = np.arccos(
+                np.clip(
+                    np.dot(v1, v2) /
+                    (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-6),
+                    -1,
+                    1
+                )
+            )
+
+            curvature_values.append(angle)
+
+        avg_curvature = np.mean(curvature_values)
+
+        # Rounded corners have lower curvature concentration
+        # Sharp corners have high curvature spike
+
+        corner_score = np.clip(avg_curvature / np.pi, 0, 1)
 
         return {
+            "corner_score": float(corner_score),
+            "confidence": 1.0
+        }
             "corner_score": float(final_score),
             "confidence": 1.0
         }
