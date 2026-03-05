@@ -12,7 +12,7 @@ class VoodooRawEngine:
         pass
 
     # ---------------------------------------------------------
-    # Detect dominant card bounding box (solid background)
+    # Detect dominant card bounding box (solid background assumed)
     # ---------------------------------------------------------
     def detect_card_bbox(self, image):
 
@@ -50,7 +50,7 @@ class VoodooRawEngine:
         return x, y, w, h
 
     # ---------------------------------------------------------
-    # Predictive centering (symmetry based)
+    # Predictive symmetry centering
     # ---------------------------------------------------------
     def compute_centering(self, card_img):
 
@@ -122,7 +122,7 @@ class VoodooRawEngine:
         return float(normalized)
 
     # ---------------------------------------------------------
-    # Main RAW analysis
+    # Main RAW card analysis
     # ---------------------------------------------------------
     def analyze_array(self, image_array):
 
@@ -187,8 +187,8 @@ class VoodooCornerCloseupEngine:
 
         largest = max(contours, key=cv2.contourArea)
 
-        # Compute curvature along contour
-        curvature_values = []
+        # Compute curvature at each contour point
+        curvatures = []
 
         for i in range(1, len(largest) - 1):
             p_prev = largest[i - 1][0]
@@ -203,12 +203,17 @@ class VoodooCornerCloseupEngine:
                 np.clip(np.dot(v1, v2) / denom, -1, 1)
             )
 
-            curvature_values.append(angle)
+            curvatures.append(angle)
 
-        avg_curvature = np.mean(curvature_values)
+        curvatures = np.array(curvatures)
 
-        # Normalize curvature to 0-1
-        corner_score = np.clip(avg_curvature / np.pi, 0, 1)
+        if len(curvatures) == 0:
+            return {"corner_score": 0.5, "confidence": 0.0}
+
+        # Use maximum curvature spike (corner tip sharpness)
+        max_curvature = np.max(curvatures)
+
+        corner_score = np.clip(max_curvature / np.pi, 0, 1)
 
         return {
             "corner_score": float(corner_score),
