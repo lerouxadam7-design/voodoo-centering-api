@@ -166,6 +166,7 @@ class VoodooCornerCloseupEngine:
 
     def analyze_array(self, image_array):
 
+        # Resize for consistent scale
         target_width = 600
         h, w = image_array.shape[:2]
         scale = target_width / w
@@ -174,61 +175,42 @@ class VoodooCornerCloseupEngine:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
+        # Edge detection
         edges = cv2.Canny(blur, 75, 200)
 
-        # Mask only outer boundary region (ignore interior design lines)
-        mask = np.zeros_like(edges)
-
-        border = int(min(h, w) * 0.20)
-
-        mask[:border, :] = 255
-        mask[:, :border] = 255
-        mask[h-border:h, :] = 255
-        mask[:, w-border:w] = 255
-
-        edges_masked = cv2.bitwise_and(edges, mask)
-
-        lines = cv2.HoughLinesP(
-            edges_masked,
-            1,
-            np.pi / 180,
-            threshold=50,
-            minLineLength=80,
-            maxLineGap=10
+        # Distance transform (measures how far pixels are from edge)
+        dist_transform = cv2.distanceTransform(
+            255 - edges, cv2.DIST_L2, 3
         )
 
-        if lines is None or len(lines) < 2:
-            return {"corner_score": 0.5, "confidence": 0.0}
+        # Focus on central corner region
+        h2, w2 = gray.shape
+        center_region = int(min(h2, w2) * 0.25)
 
-        angles = []
-        lengths = []
+        region = dist_transform[0:center_region, 0:center_region]
 
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-            angle = np.degrees(np.arctan2((y2 - y1), (x2 - x1)))
-            angles.append(angle)
-            lengths.append(length)
+        # In sharp corner:
+        # Edges intersect tightly → high local gradient concentration
+        # Distance values near tip are small
 
-        sorted_idx = np.argsort(lengths)[::-1]
-        angles = np.array(angles)[sorted_idx]
+        avg_distance = np.mean(region)
+        std_distance = np.std(region)
 
-        if len(angles) < 2:
-            return {"corner_score": 0.5, "confidence": 0.0}
+        # Gradient magnitude concentration
+        grad_x = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
+        magnitude = np.sqrt(grad_x**2 + grad_y**2)
 
-        angle1 = angles[0]
-        angle2 = angles[1]
+        grad_region = magnitude[0:center_region, 0:center_region]
+        grad_concentration = np.mean(grad_region)
 
-        angle_diff = abs(angle1 - angle2)
+        # Combine metrics
+        # Sharp corner = low avg_distance + high gradient concentration
+        score = (grad_concentration / 255) * 0.7 - (avg_distance / 50) * 0.3
 
-        if angle_diff > 180:
-            angle_diff = 360 - angle_diff
-
-        deviation = abs(90 - angle_diff)
-
-        corner_score = 1 - min(deviation / 90, 1)
+        corner_score = float(np.clip(score, 0, 1))
 
         return {
-            "corner_score": float(np.clip(corner_score, 0, 1)),
+            "corner_score": corner_score,
             "confidence": 1.0
         }
