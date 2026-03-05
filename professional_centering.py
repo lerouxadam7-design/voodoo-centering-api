@@ -122,7 +122,7 @@ class VoodooRawEngine:
         return float(normalized)
 
     # ---------------------------------------------------------
-    # Main RAW card analysis
+    # Main RAW analysis
     # ---------------------------------------------------------
     def analyze_array(self, image_array):
 
@@ -156,7 +156,7 @@ class VoodooRawEngine:
 
 
 # ============================================================
-# CLOSE-UP CORNER GEOMETRY ENGINE
+# CLOSE-UP CORNER CONCENTRATION ENGINE
 # ============================================================
 
 class VoodooCornerCloseupEngine:
@@ -166,7 +166,6 @@ class VoodooCornerCloseupEngine:
 
     def analyze_array(self, image_array):
 
-        # Resize for consistent scale
         target_width = 600
         h, w = image_array.shape[:2]
         scale = target_width / w
@@ -175,42 +174,34 @@ class VoodooCornerCloseupEngine:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        # Edge detection
         edges = cv2.Canny(blur, 75, 200)
 
-        # Distance transform (measures how far pixels are from edge)
-        dist_transform = cv2.distanceTransform(
-            255 - edges, cv2.DIST_L2, 3
-        )
+        h2, w2 = edges.shape
+        radius = int(min(h2, w2) * 0.25)
 
-        # Focus on central corner region
-        h2, w2 = gray.shape
-        center_region = int(min(h2, w2) * 0.25)
+        # Create circular mask near corner tip
+        y_idx, x_idx = np.ogrid[:radius, :radius]
+        mask = (x_idx**2 + y_idx**2) <= radius**2
 
-        region = dist_transform[0:center_region, 0:center_region]
+        region = edges[0:radius, 0:radius]
+        masked_edges = region[mask]
 
-        # In sharp corner:
-        # Edges intersect tightly → high local gradient concentration
-        # Distance values near tip are small
+        if masked_edges.size == 0:
+            return {"corner_score": 0.5, "confidence": 0.0}
 
-        avg_distance = np.mean(region)
-        std_distance = np.std(region)
+        edge_density = np.mean(masked_edges) / 255
 
-        # Gradient magnitude concentration
-        grad_x = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
-        magnitude = np.sqrt(grad_x**2 + grad_y**2)
+        ys, xs = np.where(region > 0)
+        if len(xs) == 0:
+            return {"corner_score": 0.5, "confidence": 0.0}
 
-        grad_region = magnitude[0:center_region, 0:center_region]
-        grad_concentration = np.mean(grad_region)
+        distances = np.sqrt(xs**2 + ys**2)
+        avg_distance = np.mean(distances) / radius
 
-        # Combine metrics
-        # Sharp corner = low avg_distance + high gradient concentration
-        score = (grad_concentration / 255) * 0.7 - (avg_distance / 50) * 0.3
-
-        corner_score = float(np.clip(score, 0, 1))
+        # Sharp = high density, low spread
+        score = edge_density * (1 - avg_distance)
 
         return {
-            "corner_score": corner_score,
+            "corner_score": float(np.clip(score, 0, 1)),
             "confidence": 1.0
         }
