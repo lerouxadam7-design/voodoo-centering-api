@@ -122,7 +122,7 @@ class VoodooRawEngine:
         return float(normalized)
 
     # ---------------------------------------------------------
-    # Main RAW analysis
+    # Main RAW card analysis
     # ---------------------------------------------------------
     def analyze_array(self, image_array):
 
@@ -179,7 +179,7 @@ class VoodooCornerCloseupEngine:
         h2, w2 = edges.shape
         radius = int(min(h2, w2) * 0.25)
 
-        # Create circular mask near corner tip
+        # Circular mask near tip
         y_idx, x_idx = np.ogrid[:radius, :radius]
         mask = (x_idx**2 + y_idx**2) <= radius**2
 
@@ -198,8 +198,9 @@ class VoodooCornerCloseupEngine:
         distances = np.sqrt(xs**2 + ys**2)
         avg_distance = np.mean(distances) / radius
 
-        # Sharp = high density, low spread
-        score = edge_density * (1 - avg_distance)
+        # Enhanced scaling
+        score = (edge_density ** 0.5) * (1 - avg_distance)
+        score = score * 2  # stretch dynamic range
 
         return {
             "corner_score": float(np.clip(score, 0, 1)),
