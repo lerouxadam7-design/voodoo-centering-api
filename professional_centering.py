@@ -50,7 +50,7 @@ class VoodooRawEngine:
         return x, y, w, h
 
     # ---------------------------------------------------------
-    # BORDER-BASED CENTERING (NEW)
+    # BORDER-BASED CENTERING
     # ---------------------------------------------------------
     def compute_centering(self, card_img):
 
@@ -63,10 +63,8 @@ class VoodooRawEngine:
         left_distances = []
         right_distances = []
 
-        # Measure horizontal border thickness
         for y in range(int(h * 0.2), int(h * 0.8)):
             row = edges[y, :]
-
             indices = np.where(row > 0)[0]
             if len(indices) > 0:
                 left_distances.append(indices[0])
@@ -75,10 +73,8 @@ class VoodooRawEngine:
         top_distances = []
         bottom_distances = []
 
-        # Measure vertical border thickness
         for x in range(int(w * 0.2), int(w * 0.8)):
             col = edges[:, x]
-
             indices = np.where(col > 0)[0]
             if len(indices) > 0:
                 top_distances.append(indices[0])
@@ -89,7 +85,6 @@ class VoodooRawEngine:
 
         left_mean = np.mean(left_distances)
         right_mean = np.mean(right_distances)
-
         top_mean = np.mean(top_distances)
         bottom_mean = np.mean(bottom_distances)
 
@@ -99,7 +94,7 @@ class VoodooRawEngine:
         return float(horizontal_ratio), float(vertical_ratio)
 
     # ---------------------------------------------------------
-    # EDGE INTEGRITY
+    # EDGE INTEGRITY FEATURE
     # ---------------------------------------------------------
     def compute_edge_score(self, card_img):
 
@@ -133,7 +128,26 @@ class VoodooRawEngine:
         return float(normalized)
 
     # ---------------------------------------------------------
-    # MAIN ANALYSIS
+    # SURFACE SMOOTHNESS FEATURE (NEW)
+    # ---------------------------------------------------------
+    def compute_surface_score(self, card_img):
+
+        gray = cv2.cvtColor(card_img, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        grad_x = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
+        magnitude = np.sqrt(grad_x**2 + grad_y**2)
+
+        noise = np.var(magnitude)
+
+        # Empirical normalization
+        surface_score = 1 - min(noise / 5000, 1)
+
+        return float(np.clip(surface_score, 0, 1))
+
+    # ---------------------------------------------------------
+    # MAIN RAW ANALYSIS
     # ---------------------------------------------------------
     def analyze_array(self, image_array):
 
@@ -149,6 +163,7 @@ class VoodooRawEngine:
                 "horizontal_ratio": 0.5,
                 "vertical_ratio": 0.5,
                 "edge_score": 0.5,
+                "surface_score": 0.5,
                 "confidence": 0.0
             }
 
@@ -157,17 +172,19 @@ class VoodooRawEngine:
 
         h_ratio, v_ratio = self.compute_centering(card)
         edge_score = self.compute_edge_score(card)
+        surface_score = self.compute_surface_score(card)
 
         return {
             "horizontal_ratio": h_ratio,
             "vertical_ratio": v_ratio,
             "edge_score": edge_score,
+            "surface_score": surface_score,
             "confidence": 1.0
         }
 
 
 # ============================================================
-# CLOSE-UP CORNER ENGINE (UNCHANGED)
+# CLOSE-UP CORNER ENGINE
 # ============================================================
 
 class VoodooCornerCloseupEngine:
