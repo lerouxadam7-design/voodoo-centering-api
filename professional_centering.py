@@ -3,17 +3,58 @@ import numpy as np
 
 
 # ============================================================
-# RAW FULL CARD FEATURE ENGINE
+# CORNER CONCENTRATION ENGINE
+# ============================================================
+
+class VoodooCornerCloseupEngine:
+
+    def analyze_patch(self, patch):
+
+        gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        edges = cv2.Canny(blur, 75, 200)
+
+        h, w = edges.shape
+        radius = int(min(h, w) * 0.6)
+
+        y_idx, x_idx = np.ogrid[:radius, :radius]
+        mask = (x_idx**2 + y_idx**2) <= radius**2
+
+        region = edges[0:radius, 0:radius]
+        masked_edges = region[mask]
+
+        if masked_edges.size == 0:
+            return 0.5
+
+        edge_density = np.mean(masked_edges) / 255
+
+        ys, xs = np.where(region > 0)
+        if len(xs) == 0:
+            return 0.5
+
+        distances = np.sqrt(xs**2 + ys**2)
+        avg_distance = np.mean(distances) / radius
+
+        score = (edge_density ** 0.5) * (1 - avg_distance)
+        score = score * 2
+
+        return float(np.clip(score, 0, 1))
+
+
+# ============================================================
+# RAW FULL CARD ENGINE
 # ============================================================
 
 class VoodooRawEngine:
 
     def __init__(self):
-        pass
+        self.corner_engine = VoodooCornerCloseupEngine()
 
     # ---------------------------------------------------------
     # Detect dominant card bounding box
     # ---------------------------------------------------------
+
     def detect_card_bbox(self, image):
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -52,6 +93,7 @@ class VoodooRawEngine:
     # ---------------------------------------------------------
     # BORDER-BASED CENTERING
     # ---------------------------------------------------------
+
     def compute_centering(self, card_img):
 
         gray = cv2.cvtColor(card_img, cv2.COLOR_BGR2GRAY)
@@ -94,8 +136,9 @@ class VoodooRawEngine:
         return float(horizontal_ratio), float(vertical_ratio)
 
     # ---------------------------------------------------------
-    # EDGE INTEGRITY FEATURE
+    # EDGE FEATURE
     # ---------------------------------------------------------
+
     def compute_edge_score(self, card_img):
 
         h, w = card_img.shape[:2]
@@ -128,27 +171,30 @@ class VoodooRawEngine:
         return float(normalized)
 
     # ---------------------------------------------------------
-    # SURFACE SMOOTHNESS FEATURE (NEW)
+    # AUTO EXTRACT 4 CORNERS
     # ---------------------------------------------------------
-    def compute_surface_score(self, card_img):
 
-        gray = cv2.cvtColor(card_img, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    def compute_corner_score(self, card_img):
 
-        grad_x = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
-        magnitude = np.sqrt(grad_x**2 + grad_y**2)
+        h, w = card_img.shape[:2]
+        patch_size = int(min(h, w) * 0.25)
 
-        noise = np.var(magnitude)
+        patches = [
+            card_img[0:patch_size, 0:patch_size],                         # TL
+            card_img[0:patch_size, w-patch_size:w],                       # TR
+            card_img[h-patch_size:h, 0:patch_size],                       # BL
+            card_img[h-patch_size:h, w-patch_size:w]                      # BR
+        ]
 
-        # Empirical normalization
-        surface_score = 1 - min(noise / 5000, 1)
+        scores = [self.corner_engine.analyze_patch(p) for p in patches]
 
-        return float(np.clip(surface_score, 0, 1))
+        # PSA logic: weakest corner dominates
+        return float(min(scores))
 
     # ---------------------------------------------------------
-    # MAIN RAW ANALYSIS
+    # MAIN ANALYSIS
     # ---------------------------------------------------------
+
     def analyze_array(self, image_array):
 
         target_width = 1000
@@ -163,7 +209,7 @@ class VoodooRawEngine:
                 "horizontal_ratio": 0.5,
                 "vertical_ratio": 0.5,
                 "edge_score": 0.5,
-                "surface_score": 0.5,
+                "corner_score": 0.5,
                 "confidence": 0.0
             }
 
@@ -172,63 +218,12 @@ class VoodooRawEngine:
 
         h_ratio, v_ratio = self.compute_centering(card)
         edge_score = self.compute_edge_score(card)
-        surface_score = self.compute_surface_score(card)
+        corner_score = self.compute_corner_score(card)
 
         return {
             "horizontal_ratio": h_ratio,
             "vertical_ratio": v_ratio,
             "edge_score": edge_score,
-            "surface_score": surface_score,
-            "confidence": 1.0
-        }
-
-
-# ============================================================
-# CLOSE-UP CORNER ENGINE
-# ============================================================
-
-class VoodooCornerCloseupEngine:
-
-    def __init__(self):
-        pass
-
-    def analyze_array(self, image_array):
-
-        target_width = 600
-        h, w = image_array.shape[:2]
-        scale = target_width / w
-        image = cv2.resize(image_array, (target_width, int(h * scale)))
-
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-
-        edges = cv2.Canny(blur, 75, 200)
-
-        h2, w2 = edges.shape
-        radius = int(min(h2, w2) * 0.25)
-
-        y_idx, x_idx = np.ogrid[:radius, :radius]
-        mask = (x_idx**2 + y_idx**2) <= radius**2
-
-        region = edges[0:radius, 0:radius]
-        masked_edges = region[mask]
-
-        if masked_edges.size == 0:
-            return {"corner_score": 0.5, "confidence": 0.0}
-
-        edge_density = np.mean(masked_edges) / 255
-
-        ys, xs = np.where(region > 0)
-        if len(xs) == 0:
-            return {"corner_score": 0.5, "confidence": 0.0}
-
-        distances = np.sqrt(xs**2 + ys**2)
-        avg_distance = np.mean(distances) / radius
-
-        score = (edge_density ** 0.5) * (1 - avg_distance)
-        score = score * 2
-
-        return {
-            "corner_score": float(np.clip(score, 0, 1)),
+            "corner_score": corner_score,
             "confidence": 1.0
         }
