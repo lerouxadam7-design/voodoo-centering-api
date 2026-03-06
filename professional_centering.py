@@ -12,7 +12,7 @@ class VoodooRawEngine:
         pass
 
     # ---------------------------------------------------------
-    # Detect dominant card bounding box (solid background assumed)
+    # Detect dominant card bounding box
     # ---------------------------------------------------------
     def detect_card_bbox(self, image):
 
@@ -50,45 +50,56 @@ class VoodooRawEngine:
         return x, y, w, h
 
     # ---------------------------------------------------------
-    # Predictive symmetry centering
+    # BORDER-BASED CENTERING (NEW)
     # ---------------------------------------------------------
     def compute_centering(self, card_img):
 
         gray = cv2.cvtColor(card_img, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blur, 50, 150)
 
-        h, w = gray.shape
-        mx = int(w * 0.05)
-        my = int(h * 0.05)
+        h, w = edges.shape
 
-        gray = gray[my:h-my, mx:w-mx]
-        blur = cv2.GaussianBlur(gray, (31, 31), 0)
+        left_distances = []
+        right_distances = []
 
-        h2, w2 = blur.shape
+        # Measure horizontal border thickness
+        for y in range(int(h * 0.2), int(h * 0.8)):
+            row = edges[y, :]
 
-        left = blur[:, :w2//2]
-        right = np.fliplr(blur[:, w2//2:])
+            indices = np.where(row > 0)[0]
+            if len(indices) > 0:
+                left_distances.append(indices[0])
+                right_distances.append(w - indices[-1])
 
-        top = blur[:h2//2, :]
-        bottom = np.flipud(blur[h2//2:, :])
+        top_distances = []
+        bottom_distances = []
 
-        min_w = min(left.shape[1], right.shape[1])
-        left = left[:, :min_w]
-        right = right[:, :min_w]
+        # Measure vertical border thickness
+        for x in range(int(w * 0.2), int(w * 0.8)):
+            col = edges[:, x]
 
-        min_h = min(top.shape[0], bottom.shape[0])
-        top = top[:min_h, :]
-        bottom = bottom[:min_h, :]
+            indices = np.where(col > 0)[0]
+            if len(indices) > 0:
+                top_distances.append(indices[0])
+                bottom_distances.append(h - indices[-1])
 
-        h_diff = np.mean(np.abs(left - right))
-        v_diff = np.mean(np.abs(top - bottom))
+        if not left_distances or not top_distances:
+            return 0.5, 0.5
 
-        h_ratio = 1 - (h_diff / 255)
-        v_ratio = 1 - (v_diff / 255)
+        left_mean = np.mean(left_distances)
+        right_mean = np.mean(right_distances)
 
-        return float(np.clip(h_ratio, 0, 1)), float(np.clip(v_ratio, 0, 1))
+        top_mean = np.mean(top_distances)
+        bottom_mean = np.mean(bottom_distances)
+
+        horizontal_ratio = min(left_mean, right_mean) / max(left_mean, right_mean)
+        vertical_ratio = min(top_mean, bottom_mean) / max(top_mean, bottom_mean)
+
+        return float(horizontal_ratio), float(vertical_ratio)
 
     # ---------------------------------------------------------
-    # Edge integrity feature
+    # EDGE INTEGRITY
     # ---------------------------------------------------------
     def compute_edge_score(self, card_img):
 
@@ -122,7 +133,7 @@ class VoodooRawEngine:
         return float(normalized)
 
     # ---------------------------------------------------------
-    # Main RAW card analysis
+    # MAIN ANALYSIS
     # ---------------------------------------------------------
     def analyze_array(self, image_array):
 
@@ -156,7 +167,7 @@ class VoodooRawEngine:
 
 
 # ============================================================
-# CLOSE-UP CORNER CONCENTRATION ENGINE
+# CLOSE-UP CORNER ENGINE (UNCHANGED)
 # ============================================================
 
 class VoodooCornerCloseupEngine:
@@ -179,7 +190,6 @@ class VoodooCornerCloseupEngine:
         h2, w2 = edges.shape
         radius = int(min(h2, w2) * 0.25)
 
-        # Circular mask near tip
         y_idx, x_idx = np.ogrid[:radius, :radius]
         mask = (x_idx**2 + y_idx**2) <= radius**2
 
@@ -198,9 +208,8 @@ class VoodooCornerCloseupEngine:
         distances = np.sqrt(xs**2 + ys**2)
         avg_distance = np.mean(distances) / radius
 
-        # Enhanced scaling
         score = (edge_density ** 0.5) * (1 - avg_distance)
-        score = score * 2  # stretch dynamic range
+        score = score * 2
 
         return {
             "corner_score": float(np.clip(score, 0, 1)),
