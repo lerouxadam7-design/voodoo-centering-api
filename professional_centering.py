@@ -3,35 +3,46 @@ import numpy as np
 
 
 # ============================================================
-# CORNER CONCENTRATION ENGINE
+# CORNER ENGINE (SAFE VERSION)
 # ============================================================
 
 class VoodooCornerCloseupEngine:
 
     def analyze_patch(self, patch):
 
+        if patch is None:
+            return 0.5
+
+        h, w = patch.shape[:2]
+
+        if h < 20 or w < 20:
+            return 0.5
+
         gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
         edges = cv2.Canny(blur, 75, 200)
 
-        h, w = edges.shape
-        radius = int(min(h, w) * 0.6)
+        if edges is None:
+            return 0.5
 
-        y_idx, x_idx = np.ogrid[:radius, :radius]
-        mask = (x_idx**2 + y_idx**2) <= radius**2
+        h2, w2 = edges.shape
+        radius = int(min(h2, w2) * 0.4)
+
+        if radius <= 5:
+            return 0.5
 
         region = edges[0:radius, 0:radius]
-        masked_edges = region[mask]
 
-        if masked_edges.size == 0:
+        if region.size == 0:
             return 0.5
-
-        edge_density = np.mean(masked_edges) / 255
 
         ys, xs = np.where(region > 0)
+
         if len(xs) == 0:
             return 0.5
+
+        edge_density = np.mean(region) / 255
 
         distances = np.sqrt(xs**2 + ys**2)
         avg_distance = np.mean(distances) / radius
@@ -43,17 +54,13 @@ class VoodooCornerCloseupEngine:
 
 
 # ============================================================
-# RAW FULL CARD ENGINE
+# RAW ENGINE
 # ============================================================
 
 class VoodooRawEngine:
 
     def __init__(self):
         self.corner_engine = VoodooCornerCloseupEngine()
-
-    # ---------------------------------------------------------
-    # Detect dominant card bounding box
-    # ---------------------------------------------------------
 
     def detect_card_bbox(self, image):
 
@@ -89,10 +96,6 @@ class VoodooRawEngine:
             return None
 
         return x, y, w, h
-
-    # ---------------------------------------------------------
-    # BORDER-BASED CENTERING
-    # ---------------------------------------------------------
 
     def compute_centering(self, card_img):
 
@@ -135,10 +138,6 @@ class VoodooRawEngine:
 
         return float(horizontal_ratio), float(vertical_ratio)
 
-    # ---------------------------------------------------------
-    # EDGE FEATURE
-    # ---------------------------------------------------------
-
     def compute_edge_score(self, card_img):
 
         h, w = card_img.shape[:2]
@@ -167,12 +166,7 @@ class VoodooRawEngine:
             score = (edge_norm * 0.7) - (var_norm * 0.3)
             scores.append(score)
 
-        normalized = np.clip(np.mean(scores), 0, 1)
-        return float(normalized)
-
-    # ---------------------------------------------------------
-    # AUTO EXTRACT 4 CORNERS
-    # ---------------------------------------------------------
+        return float(np.clip(np.mean(scores), 0, 1))
 
     def compute_corner_score(self, card_img):
 
@@ -180,20 +174,15 @@ class VoodooRawEngine:
         patch_size = int(min(h, w) * 0.25)
 
         patches = [
-            card_img[0:patch_size, 0:patch_size],                         # TL
-            card_img[0:patch_size, w-patch_size:w],                       # TR
-            card_img[h-patch_size:h, 0:patch_size],                       # BL
-            card_img[h-patch_size:h, w-patch_size:w]                      # BR
+            card_img[0:patch_size, 0:patch_size],
+            card_img[0:patch_size, w-patch_size:w],
+            card_img[h-patch_size:h, 0:patch_size],
+            card_img[h-patch_size:h, w-patch_size:w]
         ]
 
         scores = [self.corner_engine.analyze_patch(p) for p in patches]
 
-        # PSA logic: weakest corner dominates
         return float(min(scores))
-
-    # ---------------------------------------------------------
-    # MAIN ANALYSIS
-    # ---------------------------------------------------------
 
     def analyze_array(self, image_array):
 
