@@ -2,49 +2,95 @@ import cv2
 import numpy as np
 
 
-class VoodooSlabCentering:
+# ============================================================
+# CORNER ENGINE
+# ============================================================
+
+class VoodooCornerCloseupEngine:
+
+    def analyze_patch(self, patch):
+
+        if patch is None:
+            return 0.5
+
+        h, w = patch.shape[:2]
+
+        if h < 20 or w < 20:
+            return 0.5
+
+        gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        edges = cv2.Canny(blur, 75, 200)
+
+        if edges is None:
+            return 0.5
+
+        h2, w2 = edges.shape
+        radius = int(min(h2, w2) * 0.4)
+
+        if radius <= 5:
+            return 0.5
+
+        region = edges[0:radius, 0:radius]
+        gray_region = gray[0:radius, 0:radius]
+
+        if region.size == 0:
+            return 0.5
+
+        ys, xs = np.where(region > 0)
+
+        # -----------------------------------------
+        # 1. Concentration score
+        # -----------------------------------------
+        if len(xs) == 0:
+            concentration_score = 0.0
+        else:
+            edge_density = np.mean(region) / 255.0
+            distances = np.sqrt(xs**2 + ys**2)
+            avg_distance = np.mean(distances) / radius
+            concentration_score = (edge_density ** 0.5) * (1 - avg_distance)
+            concentration_score = float(np.clip(concentration_score * 2, 0, 1))
+
+        # -----------------------------------------
+        # 2. Whitening penalty
+        # -----------------------------------------
+        bright_mask = gray_region > 220
+        whitening_density = np.mean(bright_mask.astype(np.float32))
+        whitening_penalty = float(np.clip(whitening_density * 4, 0, 1))
+
+        # -----------------------------------------
+        # 3. Roughness penalty
+        # -----------------------------------------
+        roughness = np.var(region.astype(np.float32) / 255.0)
+        roughness_penalty = float(np.clip(roughness * 6, 0, 1))
+
+        # -----------------------------------------
+        # Final score
+        # -----------------------------------------
+        score = (
+            concentration_score * 0.7
+            - whitening_penalty * 0.2
+            - roughness_penalty * 0.1
+        )
+
+        return float(np.clip(score, 0, 1))
+
+
+# ============================================================
+# RAW ENGINE
+# ============================================================
+
+class VoodooRawEngine:
 
     def __init__(self):
-        pass
+        self.corner_engine = VoodooCornerCloseupEngine()
 
-    def order_points(self, pts):
-        rect = np.zeros((4, 2), dtype="float32")
+    # ---------------------------------------------------------
+    # Detect dominant card bounding box
+    # ---------------------------------------------------------
 
-        s = pts.sum(axis=1)
-        rect[0] = pts[np.argmin(s)]
-        rect[2] = pts[np.argmax(s)]
-
-        diff = np.diff(pts, axis=1)
-        rect[1] = pts[np.argmin(diff)]
-        rect[3] = pts[np.argmax(diff)]
-
-        return rect
-
-    def perspective_warp(self, image, pts):
-        rect = self.order_points(pts)
-        (tl, tr, br, bl) = rect
-
-        widthA = np.linalg.norm(br - bl)
-        widthB = np.linalg.norm(tr - tl)
-        maxWidth = int(max(widthA, widthB))
-
-        heightA = np.linalg.norm(tr - br)
-        heightB = np.linalg.norm(tl - bl)
-        maxHeight = int(max(heightA, heightB))
-
-        dst = np.array([
-            [0, 0],
-            [maxWidth - 1, 0],
-            [maxWidth - 1, maxHeight - 1],
-            [0, maxHeight - 1]
-        ], dtype="float32")
-
-        M = cv2.getPerspectiveTransform(rect, dst)
-        warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
-
-        return warped
-
-    def find_card_contour(self, image):
+    def detect_card_bbox(self, image):
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (7, 7), 0)
@@ -58,87 +104,160 @@ class VoodooSlabCentering:
             5
         )
 
+        kernel = np.ones((5, 5), np.uint8)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+
         contours, _ = cv2.findContours(
             thresh,
             cv2.RETR_EXTERNAL,
             cv2.CHAIN_APPROX_SIMPLE
         )
 
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        if not contours:
+            return None
 
-        h, w = image.shape[:2]
-        image_area = h * w
+        largest = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(largest)
 
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
+        image_area = image.shape[0] * image.shape[1]
+        if w * h < image_area * 0.30:
+            return None
 
-            # Skip extremely large contour (full slab)
-            if area > image_area * 0.95:
-                continue
+        return x, y, w, h
 
-            peri = cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+    # ---------------------------------------------------------
+    # Centering
+    # ---------------------------------------------------------
 
-            if len(approx) == 4:
-                return approx.reshape(4, 2)
+    def compute_centering(self, card_img):
 
-        return None
+        gray = cv2.cvtColor(card_img, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blur, 50, 150)
 
-    def calculate_centering(self, warped):
+        h, w = edges.shape
 
-        h, w = warped.shape[:2]
+        left_distances = []
+        right_distances = []
 
-        gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 50, 150)
+        for y in range(int(h * 0.2), int(h * 0.8)):
+            row = edges[y, :]
+            indices = np.where(row > 0)[0]
+            if len(indices) > 0:
+                left_distances.append(indices[0])
+                right_distances.append(w - indices[-1])
 
-        coords = np.column_stack(np.where(edges > 0))
+        top_distances = []
+        bottom_distances = []
 
-        if coords.size == 0:
-            return 0.5, 0.5, 0.0
+        for x in range(int(w * 0.2), int(w * 0.8)):
+            col = edges[:, x]
+            indices = np.where(col > 0)[0]
+            if len(indices) > 0:
+                top_distances.append(indices[0])
+                bottom_distances.append(h - indices[-1])
 
-        y_min, x_min = coords.min(axis=0)
-        y_max, x_max = coords.max(axis=0)
+        if not left_distances or not top_distances:
+            return 0.5, 0.5
 
-        left_margin = x_min
-        right_margin = w - x_max
-        top_margin = y_min
-        bottom_margin = h - y_max
+        left_mean = np.mean(left_distances)
+        right_mean = np.mean(right_distances)
+        top_mean = np.mean(top_distances)
+        bottom_mean = np.mean(bottom_distances)
 
-        if max(left_margin, right_margin) == 0 or max(top_margin, bottom_margin) == 0:
-            return 0.5, 0.5, 0.0
+        horizontal_ratio = min(left_mean, right_mean) / max(left_mean, right_mean)
+        vertical_ratio = min(top_mean, bottom_mean) / max(top_mean, bottom_mean)
 
-        h_ratio = min(left_margin, right_margin) / max(left_margin, right_margin)
-        v_ratio = min(top_margin, bottom_margin) / max(top_margin, bottom_margin)
+        return float(horizontal_ratio), float(vertical_ratio)
 
-        confidence = 1.0
+    # ---------------------------------------------------------
+    # Edge feature
+    # ---------------------------------------------------------
 
-        return float(h_ratio), float(v_ratio), confidence
+    def compute_edge_score(self, card_img):
 
-    def analyze(self, image_path):
+        h, w = card_img.shape[:2]
+        strip = int(min(h, w) * 0.05)
 
-        image = cv2.imread(image_path)
+        strips = [
+            card_img[0:strip, :],
+            card_img[h-strip:h, :],
+            card_img[:, 0:strip],
+            card_img[:, w-strip:w]
+        ]
 
-        # Downscale for stability
-        target_width = 1200
-        h, w = image.shape[:2]
+        scores = []
+
+        for s in strips:
+            gray = cv2.cvtColor(s, cv2.COLOR_BGR2GRAY)
+            blur = cv2.GaussianBlur(gray, (9, 9), 0)
+
+            variance = np.var(blur)
+            edges = cv2.Canny(blur, 75, 200)
+            edge_density = np.mean(edges)
+
+            edge_norm = edge_density / 255.0
+            var_norm = variance / (255.0 ** 2)
+
+            score = (edge_norm * 0.7) - (var_norm * 0.3)
+            scores.append(score)
+
+        return float(np.clip(np.mean(scores), 0, 1))
+
+    # ---------------------------------------------------------
+    # Auto 4-corner extraction
+    # ---------------------------------------------------------
+
+    def compute_corner_score(self, card_img):
+
+        h, w = card_img.shape[:2]
+        patch_size = int(min(h, w) * 0.25)
+
+        patches = [
+            card_img[0:patch_size, 0:patch_size],                   # top-left
+            card_img[0:patch_size, w-patch_size:w],                 # top-right
+            card_img[h-patch_size:h, 0:patch_size],                 # bottom-left
+            card_img[h-patch_size:h, w-patch_size:w]                # bottom-right
+        ]
+
+        scores = [self.corner_engine.analyze_patch(p) for p in patches]
+
+        # PSA logic: weakest corner dominates
+        return float(min(scores))
+
+    # ---------------------------------------------------------
+    # Main analysis
+    # ---------------------------------------------------------
+
+    def analyze_array(self, image_array):
+
+        target_width = 1000
+        h, w = image_array.shape[:2]
         scale = target_width / w
-        image = cv2.resize(image, (target_width, int(h * scale)))
+        image = cv2.resize(image_array, (target_width, int(h * scale)))
 
-        pts = self.find_card_contour(image)
+        bbox = self.detect_card_bbox(image)
 
-        if pts is None:
+        if bbox is None:
             return {
                 "horizontal_ratio": 0.5,
                 "vertical_ratio": 0.5,
+                "edge_score": 0.5,
+                "corner_score": 0.5,
                 "confidence": 0.0
             }
 
-        warped = self.perspective_warp(image, pts)
+        x, y, w2, h2 = bbox
+        card = image[y:y+h2, x:x+w2]
 
-        h_ratio, v_ratio, confidence = self.calculate_centering(warped)
+        h_ratio, v_ratio = self.compute_centering(card)
+        edge_score = self.compute_edge_score(card)
+        corner_score = self.compute_corner_score(card)
 
         return {
             "horizontal_ratio": h_ratio,
             "vertical_ratio": v_ratio,
-            "confidence": confidence
+            "edge_score": edge_score,
+            "corner_score": corner_score,
+            "confidence": 1.0
         }
