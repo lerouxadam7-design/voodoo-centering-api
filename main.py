@@ -10,6 +10,25 @@ raw_engine = VoodooRawEngine()
 corner_engine = VoodooCornerCloseupEngine()
 
 
+def decode_image(contents: bytes, max_dim: int = 1200):
+    nparr = np.frombuffer(contents, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    if image is None:
+        return None
+
+    h, w = image.shape[:2]
+    longest = max(h, w)
+
+    if longest > max_dim:
+        scale = max_dim / float(longest)
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    return image
+
+
 @app.get("/")
 def root():
     return {"status": "ok"}
@@ -28,8 +47,7 @@ async def analyze(file: UploadFile = File(...)):
         if not contents:
             return {"error": "Empty file"}
 
-        nparr = np.frombuffer(contents, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        image = decode_image(contents, max_dim=1200)
 
         if image is None:
             return {"error": "Invalid image"}
@@ -49,8 +67,7 @@ async def analyze_corner(file: UploadFile = File(...)):
         if not contents:
             return {"error": "Empty file"}
 
-        nparr = np.frombuffer(contents, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        image = decode_image(contents, max_dim=400)
 
         if image is None:
             return {"error": "Invalid image"}
