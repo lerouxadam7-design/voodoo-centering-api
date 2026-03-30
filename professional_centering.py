@@ -2,12 +2,30 @@ import cv2
 import numpy as np
 
 
+# ============================================================
+# CORNER ENGINE
+# ============================================================
+
 class VoodooCornerCloseupEngine:
+    """
+    Corner scoring engine for close-up corner images.
+
+    Goals:
+    - Normalize all uploaded corners to the same orientation
+    - Reject clearly unusable images
+    - Blend shape, whitening, and roughness signals
+    - Avoid collapsing usable corners to 0.0 too easily
+    """
+
     def __init__(self):
         self.min_patch_size = 24
         self.blur_floor = 20.0
         self.dark_mean_floor = 25.0
         self.bright_mean_ceiling = 240.0
+
+    # --------------------------------------------------------
+    # Quality checks
+    # --------------------------------------------------------
 
     def image_quality_ok(self, patch):
         if patch is None:
@@ -29,7 +47,15 @@ class VoodooCornerCloseupEngine:
 
         return True
 
+    # --------------------------------------------------------
+    # Orientation normalization
+    # --------------------------------------------------------
+
     def normalize_to_top_left(self, patch, orientation="top_left"):
+        """
+        Rotate/flip the patch so every corner is scored as if it were
+        a top-left corner.
+        """
         if orientation == "top_left":
             return patch
         if orientation == "top_right":
@@ -38,7 +64,12 @@ class VoodooCornerCloseupEngine:
             return cv2.rotate(patch, cv2.ROTATE_90_CLOCKWISE)
         if orientation == "bottom_right":
             return cv2.rotate(patch, cv2.ROTATE_180)
+
         return patch
+
+    # --------------------------------------------------------
+    # Feature extraction
+    # --------------------------------------------------------
 
     def extract_features(self, patch):
         gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
@@ -51,14 +82,17 @@ class VoodooCornerCloseupEngine:
         if radius <= 6:
             return {
                 "shape_score": 0.0,
-                "whitening_penalty": 0.4,
-                "roughness_penalty": 0.3,
+                "whitening_penalty": 0.3,
+                "roughness_penalty": 0.2,
                 "confidence": 0.0,
             }
 
         gray_region = gray[:radius, :radius]
         edge_region = edges[:radius, :radius]
 
+        # --------------------------
+        # 1. Shape / concentration
+        # --------------------------
         ys, xs = np.where(edge_region > 0)
 
         if len(xs) == 0:
@@ -67,23 +101,39 @@ class VoodooCornerCloseupEngine:
             edge_density = float(np.mean(edge_region) / 255.0)
             distances = np.sqrt(xs**2 + ys**2)
             avg_distance = float(np.mean(distances) / max(radius, 1))
+
             shape_score = (edge_density ** 0.5) * (1.0 - avg_distance)
             shape_score = float(np.clip(shape_score * 2.5, 0, 1))
 
+        # --------------------------
+        # 2. Whitening / chipping
+        # --------------------------
         border_band = max(3, int(radius * 0.18))
+
         top_band = gray_region[:border_band, :]
         left_band = gray_region[:, :border_band]
-        border_pixels = np.concatenate([top_band.flatten(), left_band.flatten()])
+
+        border_pixels = np.concatenate([
+            top_band.flatten(),
+            left_band.flatten()
+        ])
 
         bright_mask = border_pixels > 220
         whitening_density = float(np.mean(bright_mask.astype(np.float32)))
         whitening_penalty = float(np.clip(whitening_density * 3.5, 0, 1))
 
+        # --------------------------
+        # 3. Roughness / fray
+        # --------------------------
         roughness = float(np.var(edge_region.astype(np.float32) / 255.0))
         roughness_penalty = float(np.clip(roughness * 7.0, 0, 1))
 
+        # --------------------------
+        # 4. Confidence
+        # --------------------------
         lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
         mean_val = float(np.mean(gray))
+
         conf_blur = np.clip(lap_var / 120.0, 0, 1)
         conf_light = np.clip((mean_val - 25.0) / 140.0, 0, 1)
         confidence = float(np.clip((conf_blur * 0.6) + (conf_light * 0.4), 0, 1))
@@ -94,6 +144,10 @@ class VoodooCornerCloseupEngine:
             "roughness_penalty": roughness_penalty,
             "confidence": confidence,
         }
+
+    # --------------------------------------------------------
+    # Main close-up corner scoring
+    # --------------------------------------------------------
 
     def analyze_patch(self, patch, orientation="top_left"):
         if patch is None:
@@ -117,18 +171,32 @@ class VoodooCornerCloseupEngine:
         feats = self.extract_features(norm_patch)
 
         score = (
-            feats["shape_score"] * 0.72
-            - feats["whitening_penalty"] * 0.20
-            - feats["roughness_penalty"] * 0.08
+            feats["shape_score"] * 0.82
+            - feats["whitening_penalty"] * 0.12
+            - feats["roughness_penalty"] * 0.04
         )
 
-        score = score * (0.75 + 0.25 * feats["confidence"])
+        # lighter confidence damping
+        score = score * (0.90 + 0.10 * feats["confidence"])
+
+        # keep usable corners from collapsing to zero
+        if feats["confidence"] > 0.35:
+            score = max(score, 0.03)
+
         return float(np.clip(score, 0, 1))
 
+
+# ============================================================
+# RAW ENGINE
+# ============================================================
 
 class VoodooRawEngine:
     def __init__(self):
         self.corner_engine = VoodooCornerCloseupEngine()
+
+    # ---------------------------------------------------------
+    # Detect dominant card bounding box
+    # ---------------------------------------------------------
 
     def detect_card_bbox(self, image):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -163,6 +231,10 @@ class VoodooRawEngine:
             return None
 
         return x, y, w, h
+
+    # ---------------------------------------------------------
+    # Centering
+    # ---------------------------------------------------------
 
     def compute_centering(self, card_img):
         gray = cv2.cvtColor(card_img, cv2.COLOR_BGR2GRAY)
@@ -204,6 +276,10 @@ class VoodooRawEngine:
 
         return float(horizontal_ratio), float(vertical_ratio)
 
+    # ---------------------------------------------------------
+    # Edge feature
+    # ---------------------------------------------------------
+
     def compute_edge_score(self, card_img):
         h, w = card_img.shape[:2]
         strip = int(min(h, w) * 0.05)
@@ -233,6 +309,10 @@ class VoodooRawEngine:
 
         return float(np.clip(np.mean(scores), 0, 1))
 
+    # ---------------------------------------------------------
+    # Auto 4-corner extraction
+    # ---------------------------------------------------------
+
     def compute_corner_score(self, card_img):
         h, w = card_img.shape[:2]
         patch_size = int(min(h, w) * 0.25)
@@ -246,7 +326,8 @@ class VoodooRawEngine:
 
         scores = []
         for orientation, patch in patches:
-            scores.append(self.corner_engine.analyze_patch(patch, orientation=orientation))
+            score = self.corner_engine.analyze_patch(patch, orientation=orientation)
+            scores.append(score)
 
         scores = sorted(scores)
 
@@ -255,8 +336,14 @@ class VoodooRawEngine:
         if len(scores) == 1:
             return float(scores[0])
 
+        # Worst + second-worst blend for stability
         final_score = (scores[0] * 0.70) + (scores[1] * 0.30)
+
         return float(np.clip(final_score, 0, 1))
+
+    # ---------------------------------------------------------
+    # Main analysis
+    # ---------------------------------------------------------
 
     def analyze_array(self, image_array):
         target_width = 1000
