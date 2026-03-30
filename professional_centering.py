@@ -8,20 +8,21 @@ import numpy as np
 
 class VoodooCornerCloseupEngine:
     """
-    Corner scoring engine for close-up corner images.
+    Geometry-first corner scoring.
 
-    Goals:
-    - Normalize all uploaded corners to the same orientation
-    - Reject clearly unusable images
-    - Blend shape, whitening, and roughness signals
-    - Avoid collapsing usable corners to 0.0 too easily
+    Designed to be more stable on chrome/refractor cards by focusing on:
+    - border line continuity
+    - corner tip sharpness
+    - mild whitening penalty
+
+    and focusing less on raw texture/noise.
     """
 
     def __init__(self):
-        self.min_patch_size = 24
-        self.blur_floor = 20.0
-        self.dark_mean_floor = 25.0
-        self.bright_mean_ceiling = 240.0
+        self.min_patch_size = 28
+        self.blur_floor = 18.0
+        self.dark_mean_floor = 18.0
+        self.bright_mean_ceiling = 245.0
 
     # --------------------------------------------------------
     # Quality checks
@@ -36,8 +37,8 @@ class VoodooCornerCloseupEngine:
             return False
 
         gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-
         mean_val = float(np.mean(gray))
+
         if mean_val < self.dark_mean_floor or mean_val > self.bright_mean_ceiling:
             return False
 
@@ -52,10 +53,6 @@ class VoodooCornerCloseupEngine:
     # --------------------------------------------------------
 
     def normalize_to_top_left(self, patch, orientation="top_left"):
-        """
-        Rotate/flip the patch so every corner is scored as if it were
-        a top-left corner.
-        """
         if orientation == "top_left":
             return patch
         if orientation == "top_right":
@@ -64,8 +61,54 @@ class VoodooCornerCloseupEngine:
             return cv2.rotate(patch, cv2.ROTATE_90_CLOCKWISE)
         if orientation == "bottom_right":
             return cv2.rotate(patch, cv2.ROTATE_180)
-
         return patch
+
+    # --------------------------------------------------------
+    # Border finding helpers
+    # --------------------------------------------------------
+
+    def detect_top_border(self, gray):
+        """
+        Find the top border profile across x positions.
+        Returns y positions for detected border points.
+        """
+        h, w = gray.shape
+        search_h = max(12, int(h * 0.45))
+        rows = []
+
+        for x in range(int(w * 0.12), int(w * 0.88)):
+            col = gray[:search_h, x].astype(np.float32)
+
+            # gradient along y
+            grad = np.abs(np.diff(col))
+            if len(grad) == 0:
+                continue
+
+            y = int(np.argmax(grad))
+            rows.append((x, y))
+
+        return rows
+
+    def detect_left_border(self, gray):
+        """
+        Find the left border profile across y positions.
+        Returns x positions for detected border points.
+        """
+        h, w = gray.shape
+        search_w = max(12, int(w * 0.45))
+        cols = []
+
+        for y in range(int(h * 0.12), int(h * 0.88)):
+            row = gray[y, :search_w].astype(np.float32)
+
+            grad = np.abs(np.diff(row))
+            if len(grad) == 0:
+                continue
+
+            x = int(np.argmax(grad))
+            cols.append((y, x))
+
+        return cols
 
     # --------------------------------------------------------
     # Feature extraction
@@ -73,80 +116,95 @@ class VoodooCornerCloseupEngine:
 
     def extract_features(self, patch):
         gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blur, 75, 200)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
 
         h, w = gray.shape[:2]
-        radius = int(min(h, w) * 0.42)
+        radius = int(min(h, w) * 0.55)
 
-        if radius <= 6:
+        if radius < 12:
             return {
-                "shape_score": 0.0,
-                "whitening_penalty": 0.3,
-                "roughness_penalty": 0.2,
-                "confidence": 0.0,
+                "shape_score": 0.25,
+                "continuity_score": 0.25,
+                "whitening_penalty": 0.08,
+                "confidence": 0.2,
             }
 
         gray_region = gray[:radius, :radius]
-        edge_region = edges[:radius, :radius]
 
         # --------------------------
-        # 1. Shape / concentration
+        # 1. Border detection
         # --------------------------
-        ys, xs = np.where(edge_region > 0)
+        top_pts = self.detect_top_border(gray_region)
+        left_pts = self.detect_left_border(gray_region)
 
-        if len(xs) == 0:
-            shape_score = 0.0
-        else:
-            edge_density = float(np.mean(edge_region) / 255.0)
-            distances = np.sqrt(xs**2 + ys**2)
-            avg_distance = float(np.mean(distances) / max(radius, 1))
+        if len(top_pts) < 8 or len(left_pts) < 8:
+            return {
+                "shape_score": 0.28,
+                "continuity_score": 0.25,
+                "whitening_penalty": 0.05,
+                "confidence": 0.25,
+            }
 
-            shape_score = (edge_density ** 0.5) * (1.0 - avg_distance)
-            shape_score = float(np.clip(shape_score * 2.5, 0, 1))
+        top_x = np.array([p[0] for p in top_pts], dtype=np.float32)
+        top_y = np.array([p[1] for p in top_pts], dtype=np.float32)
+
+        left_y = np.array([p[0] for p in left_pts], dtype=np.float32)
+        left_x = np.array([p[1] for p in left_pts], dtype=np.float32)
 
         # --------------------------
-        # 2. Whitening / chipping
+        # 2. Border continuity
         # --------------------------
-        border_band = max(3, int(radius * 0.18))
+        top_std = float(np.std(top_y))
+        left_std = float(np.std(left_x))
 
+        # lower std = straighter border = better
+        continuity_score = 1.0 - np.clip(((top_std + left_std) / 2.0) / 10.0, 0, 1)
+
+        # --------------------------
+        # 3. Tip sharpness
+        # --------------------------
+        top_y_med = float(np.median(top_y))
+        left_x_med = float(np.median(left_x))
+
+        # Estimate how close the corner tip sits to the ideal top-left meeting point
+        tip_distance = np.sqrt((left_x_med ** 2) + (top_y_med ** 2))
+        shape_score = 1.0 - np.clip(tip_distance / (radius * 0.65), 0, 1)
+
+        # Give slight extra credit if both borders are very near the corner
+        shape_score = float(np.clip((shape_score * 0.75) + (continuity_score * 0.25), 0, 1))
+
+        # --------------------------
+        # 4. Whitening penalty
+        # --------------------------
+        border_band = max(3, int(radius * 0.12))
         top_band = gray_region[:border_band, :]
         left_band = gray_region[:, :border_band]
+        border_pixels = np.concatenate([top_band.flatten(), left_band.flatten()])
 
-        border_pixels = np.concatenate([
-            top_band.flatten(),
-            left_band.flatten()
-        ])
-
-        bright_mask = border_pixels > 220
+        # high brightness at border can indicate whitening, but keep mild
+        bright_mask = border_pixels > 228
         whitening_density = float(np.mean(bright_mask.astype(np.float32)))
-        whitening_penalty = float(np.clip(whitening_density * 3.5, 0, 1))
+        whitening_penalty = float(np.clip(whitening_density * 1.8, 0, 0.25))
 
         # --------------------------
-        # 3. Roughness / fray
+        # 5. Confidence
         # --------------------------
-        roughness = float(np.var(edge_region.astype(np.float32) / 255.0))
-        roughness_penalty = float(np.clip(roughness * 7.0, 0, 1))
+        lap_var = float(cv2.Laplacian(gray_region, cv2.CV_64F).var())
+        mean_val = float(np.mean(gray_region))
 
-        # --------------------------
-        # 4. Confidence
-        # --------------------------
-        lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        mean_val = float(np.mean(gray))
-
-        conf_blur = np.clip(lap_var / 120.0, 0, 1)
-        conf_light = np.clip((mean_val - 25.0) / 140.0, 0, 1)
-        confidence = float(np.clip((conf_blur * 0.6) + (conf_light * 0.4), 0, 1))
+        conf_blur = np.clip(lap_var / 110.0, 0, 1)
+        conf_light = np.clip((mean_val - 20.0) / 120.0, 0, 1)
+        confidence = float(np.clip((conf_blur * 0.55) + (conf_light * 0.45), 0, 1))
 
         return {
-            "shape_score": shape_score,
-            "whitening_penalty": whitening_penalty,
-            "roughness_penalty": roughness_penalty,
-            "confidence": confidence,
+            "shape_score": float(shape_score),
+            "continuity_score": float(continuity_score),
+            "whitening_penalty": float(whitening_penalty),
+            "confidence": float(confidence),
         }
 
     # --------------------------------------------------------
-    # Main close-up corner scoring
+    # Main patch analysis
     # --------------------------------------------------------
 
     def analyze_patch(self, patch, orientation="top_left"):
@@ -157,12 +215,12 @@ class VoodooCornerCloseupEngine:
 
         h, w = norm_patch.shape[:2]
         longest = max(h, w)
-        if longest > 300:
-            scale = 300.0 / float(longest)
+        if longest > 320:
+            scale = 320.0 / float(longest)
             norm_patch = cv2.resize(
                 norm_patch,
                 (max(1, int(w * scale)), max(1, int(h * scale))),
-                interpolation=cv2.INTER_AREA,
+                interpolation=cv2.INTER_AREA
             )
 
         if not self.image_quality_ok(norm_patch):
@@ -170,18 +228,19 @@ class VoodooCornerCloseupEngine:
 
         feats = self.extract_features(norm_patch)
 
+        # Geometry-first weighting
         score = (
-            feats["shape_score"] * 0.82
+            feats["shape_score"] * 0.58
+            + feats["continuity_score"] * 0.34
             - feats["whitening_penalty"] * 0.12
-            - feats["roughness_penalty"] * 0.04
         )
 
-        # lighter confidence damping
-        score = score * (0.90 + 0.10 * feats["confidence"])
+        # gentle confidence adjustment
+        score = score * (0.92 + 0.08 * feats["confidence"])
 
-        # keep usable corners from collapsing to zero
-        if feats["confidence"] > 0.35:
-            score = max(score, 0.03)
+        # Good usable corners should not collapse near zero
+        if feats["confidence"] > 0.25:
+            score = max(score, 0.18)
 
         return float(np.clip(score, 0, 1))
 
@@ -336,8 +395,8 @@ class VoodooRawEngine:
         if len(scores) == 1:
             return float(scores[0])
 
-        # Worst + second-worst blend for stability
-        final_score = (scores[0] * 0.70) + (scores[1] * 0.30)
+        # worst + second-worst blend for stability
+        final_score = (scores[0] * 0.65) + (scores[1] * 0.35)
 
         return float(np.clip(final_score, 0, 1))
 
@@ -376,3 +435,4 @@ class VoodooRawEngine:
             "corner_score": corner_score,
             "confidence": 1.0
         }
+        
