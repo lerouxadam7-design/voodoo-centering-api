@@ -10,11 +10,24 @@ raw_engine = VoodooRawEngine()
 corner_engine = VoodooCornerCloseupEngine()
 
 
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
+
+
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
-
     try:
         contents = await file.read()
+
+        if not contents:
+            return {"error": "Empty file"}
+
         nparr = np.frombuffer(contents, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
@@ -22,7 +35,6 @@ async def analyze(file: UploadFile = File(...)):
             return {"error": "Invalid image"}
 
         result = raw_engine.analyze_array(image)
-
         return result
 
     except Exception as e:
@@ -31,17 +43,19 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.post("/analyze_corner")
 async def analyze_corner(file: UploadFile = File(...)):
-
     try:
         contents = await file.read()
+
+        if not contents:
+            return {"error": "Empty file"}
+
         nparr = np.frombuffer(contents, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
         if image is None:
             return {"error": "Invalid image"}
 
-        # run as full patch
-        score = corner_engine.analyze_patch(image)
+        score = corner_engine.analyze_patch(image, orientation="top_left")
 
         return {
             "corner_score": score,
