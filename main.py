@@ -30,7 +30,6 @@ def decode_image(contents: bytes, max_dim: int = 1200):
 
 
 def analyze_surface(image):
-    # Convert to grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
     # =====================================================
@@ -48,16 +47,18 @@ def analyze_surface(image):
 
     # =====================================================
     # 3. Gloss / texture variation
+    # Compress this so it does not dominate the score
     # =====================================================
     lap = cv2.Laplacian(gray, cv2.CV_64F)
-    gloss_score = np.var(lap) / 1000.0
+    lap_var = np.var(lap)
+    gloss_score = min(0.12, lap_var / 8000.0)
 
     # =====================================================
     # Combine
     # =====================================================
     surface_score = (
-        0.4 * scratch_score +
-        0.3 * speckle_score +
+        0.5 * scratch_score +
+        0.2 * speckle_score +
         0.3 * gloss_score
     )
 
