@@ -78,7 +78,6 @@ class VoodooCornerCloseupEngine:
 
         for x in range(int(w * 0.12), int(w * 0.88)):
             col = gray[:search_h, x].astype(np.float32)
-
             grad = np.abs(np.diff(col))
             if len(grad) == 0:
                 continue
@@ -99,7 +98,6 @@ class VoodooCornerCloseupEngine:
 
         for y in range(int(h * 0.12), int(h * 0.88)):
             row = gray[y, :search_w].astype(np.float32)
-
             grad = np.abs(np.diff(row))
             if len(grad) == 0:
                 continue
@@ -144,10 +142,7 @@ class VoodooCornerCloseupEngine:
                 "confidence": 0.25,
             }
 
-        top_x = np.array([p[0] for p in top_pts], dtype=np.float32)
         top_y = np.array([p[1] for p in top_pts], dtype=np.float32)
-
-        left_y = np.array([p[0] for p in left_pts], dtype=np.float32)
         left_x = np.array([p[1] for p in left_pts], dtype=np.float32)
 
         # --------------------------
@@ -155,7 +150,6 @@ class VoodooCornerCloseupEngine:
         # --------------------------
         top_std = float(np.std(top_y))
         left_std = float(np.std(left_x))
-
         continuity_score = 1.0 - np.clip(((top_std + left_std) / 2.0) / 10.0, 0, 1)
 
         # --------------------------
@@ -166,7 +160,6 @@ class VoodooCornerCloseupEngine:
 
         tip_distance = np.sqrt((left_x_med ** 2) + (top_y_med ** 2))
         shape_score = 1.0 - np.clip(tip_distance / (radius * 0.65), 0, 1)
-
         shape_score = float(np.clip((shape_score * 0.75) + (continuity_score * 0.25), 0, 1))
 
         # --------------------------
@@ -284,10 +277,10 @@ class VoodooRawEngine:
         return x, y, w, h
 
     # ---------------------------------------------------------
-    # Helper
+    # Helpers
     # ---------------------------------------------------------
 
-    def _trimmed_mean(self, values, trim_frac=0.15):
+    def _trimmed_mean(self, values, trim_frac=0.18):
         if not values:
             return None
 
@@ -300,7 +293,84 @@ class VoodooRawEngine:
         if trim_n > 0 and n > (2 * trim_n):
             arr = arr[trim_n:n - trim_n]
 
+        if len(arr) == 0:
+            return None
+
         return float(np.mean(arr))
+
+    def _detect_left_border_points(self, gray):
+        h, w = gray.shape
+        x_max = max(14, int(w * 0.22))
+        points = []
+
+        for y in range(int(h * 0.18), int(h * 0.82)):
+            row = gray[y, :x_max].astype(np.float32)
+            if len(row) < 6:
+                continue
+
+            grad = np.abs(np.diff(row))
+            x = int(np.argmax(grad))
+
+            if grad[x] > 8:
+                points.append(float(x))
+
+        return points
+
+    def _detect_right_border_points(self, gray):
+        h, w = gray.shape
+        x_min = min(w - 2, int(w * 0.78))
+        points = []
+
+        for y in range(int(h * 0.18), int(h * 0.82)):
+            row = gray[y, x_min:w].astype(np.float32)
+            if len(row) < 6:
+                continue
+
+            grad = np.abs(np.diff(row))
+            rel_x = int(np.argmax(grad))
+            x = x_min + rel_x
+
+            if grad[rel_x] > 8:
+                points.append(float(w - x))
+
+        return points
+
+    def _detect_top_border_points(self, gray):
+        h, w = gray.shape
+        y_max = max(14, int(h * 0.22))
+        points = []
+
+        for x in range(int(w * 0.18), int(w * 0.82)):
+            col = gray[:y_max, x].astype(np.float32)
+            if len(col) < 6:
+                continue
+
+            grad = np.abs(np.diff(col))
+            y = int(np.argmax(grad))
+
+            if grad[y] > 8:
+                points.append(float(y))
+
+        return points
+
+    def _detect_bottom_border_points(self, gray):
+        h, w = gray.shape
+        y_min = min(h - 2, int(h * 0.78))
+        points = []
+
+        for x in range(int(w * 0.18), int(w * 0.82)):
+            col = gray[y_min:h, x].astype(np.float32)
+            if len(col) < 6:
+                continue
+
+            grad = np.abs(np.diff(col))
+            rel_y = int(np.argmax(grad))
+            y = y_min + rel_y
+
+            if grad[rel_y] > 8:
+                points.append(float(h - y))
+
+        return points
 
     # ---------------------------------------------------------
     # Centering
@@ -308,36 +378,20 @@ class VoodooRawEngine:
 
     def compute_centering(self, card_img):
         gray = cv2.cvtColor(card_img, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blur, 50, 150)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        h, w = edges.shape
+        h, w = gray.shape
 
-        left_distances = []
-        right_distances = []
-
-        for y in range(int(h * 0.2), int(h * 0.8)):
-            row = edges[y, :]
-            indices = np.where(row > 0)[0]
-            if len(indices) > 0:
-                left_distances.append(float(indices[0]))
-                right_distances.append(float(w - indices[-1]))
-
-        top_distances = []
-        bottom_distances = []
-
-        for x in range(int(w * 0.2), int(w * 0.8)):
-            col = edges[:, x]
-            indices = np.where(col > 0)[0]
-            if len(indices) > 0:
-                top_distances.append(float(indices[0]))
-                bottom_distances.append(float(h - indices[-1]))
+        left_distances = self._detect_left_border_points(gray)
+        right_distances = self._detect_right_border_points(gray)
+        top_distances = self._detect_top_border_points(gray)
+        bottom_distances = self._detect_bottom_border_points(gray)
 
         if (
-            len(left_distances) == 0 or
-            len(right_distances) == 0 or
-            len(top_distances) == 0 or
-            len(bottom_distances) == 0
+            len(left_distances) < 12 or
+            len(right_distances) < 12 or
+            len(top_distances) < 12 or
+            len(bottom_distances) < 12
         ):
             return {
                 "horizontal_ratio": 0.5,
@@ -377,6 +431,11 @@ class VoodooRawEngine:
                 "card_width": int(w),
                 "card_height": int(h),
             }
+
+        left_mean = max(1.0, left_mean)
+        right_mean = max(1.0, right_mean)
+        top_mean = max(1.0, top_mean)
+        bottom_mean = max(1.0, bottom_mean)
 
         horizontal_ratio = min(left_mean, right_mean) / max(left_mean, right_mean)
         vertical_ratio = min(top_mean, bottom_mean) / max(top_mean, bottom_mean)
@@ -461,6 +520,7 @@ class VoodooRawEngine:
         if len(scores) == 1:
             return float(scores[0])
 
+        # worst + second-worst blend for stability
         final_score = (scores[0] * 0.65) + (scores[1] * 0.35)
 
         return float(np.clip(final_score, 0, 1))
