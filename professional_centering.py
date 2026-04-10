@@ -79,7 +79,6 @@ class VoodooCornerCloseupEngine:
         for x in range(int(w * 0.12), int(w * 0.88)):
             col = gray[:search_h, x].astype(np.float32)
 
-            # gradient along y
             grad = np.abs(np.diff(col))
             if len(grad) == 0:
                 continue
@@ -157,7 +156,6 @@ class VoodooCornerCloseupEngine:
         top_std = float(np.std(top_y))
         left_std = float(np.std(left_x))
 
-        # lower std = straighter border = better
         continuity_score = 1.0 - np.clip(((top_std + left_std) / 2.0) / 10.0, 0, 1)
 
         # --------------------------
@@ -166,11 +164,9 @@ class VoodooCornerCloseupEngine:
         top_y_med = float(np.median(top_y))
         left_x_med = float(np.median(left_x))
 
-        # Estimate how close the corner tip sits to the ideal top-left meeting point
         tip_distance = np.sqrt((left_x_med ** 2) + (top_y_med ** 2))
         shape_score = 1.0 - np.clip(tip_distance / (radius * 0.65), 0, 1)
 
-        # Give slight extra credit if both borders are very near the corner
         shape_score = float(np.clip((shape_score * 0.75) + (continuity_score * 0.25), 0, 1))
 
         # --------------------------
@@ -181,7 +177,6 @@ class VoodooCornerCloseupEngine:
         left_band = gray_region[:, :border_band]
         border_pixels = np.concatenate([top_band.flatten(), left_band.flatten()])
 
-        # high brightness at border can indicate whitening, but keep mild
         bright_mask = border_pixels > 228
         whitening_density = float(np.mean(bright_mask.astype(np.float32)))
         whitening_penalty = float(np.clip(whitening_density * 1.8, 0, 0.25))
@@ -228,17 +223,14 @@ class VoodooCornerCloseupEngine:
 
         feats = self.extract_features(norm_patch)
 
-        # Geometry-first weighting
         score = (
             feats["shape_score"] * 0.58
             + feats["continuity_score"] * 0.34
             - feats["whitening_penalty"] * 0.12
         )
 
-        # gentle confidence adjustment
         score = score * (0.92 + 0.08 * feats["confidence"])
 
-        # Good usable corners should not collapse near zero
         if feats["confidence"] > 0.25:
             score = max(score, 0.18)
 
@@ -292,6 +284,25 @@ class VoodooRawEngine:
         return x, y, w, h
 
     # ---------------------------------------------------------
+    # Helper
+    # ---------------------------------------------------------
+
+    def _trimmed_mean(self, values, trim_frac=0.15):
+        if not values:
+            return None
+
+        arr = np.array(values, dtype=np.float32)
+        arr.sort()
+
+        n = len(arr)
+        trim_n = int(n * trim_frac)
+
+        if trim_n > 0 and n > (2 * trim_n):
+            arr = arr[trim_n:n - trim_n]
+
+        return float(np.mean(arr))
+
+    # ---------------------------------------------------------
     # Centering
     # ---------------------------------------------------------
 
@@ -309,8 +320,8 @@ class VoodooRawEngine:
             row = edges[y, :]
             indices = np.where(row > 0)[0]
             if len(indices) > 0:
-                left_distances.append(indices[0])
-                right_distances.append(w - indices[-1])
+                left_distances.append(float(indices[0]))
+                right_distances.append(float(w - indices[-1]))
 
         top_distances = []
         bottom_distances = []
@@ -319,21 +330,76 @@ class VoodooRawEngine:
             col = edges[:, x]
             indices = np.where(col > 0)[0]
             if len(indices) > 0:
-                top_distances.append(indices[0])
-                bottom_distances.append(h - indices[-1])
+                top_distances.append(float(indices[0]))
+                bottom_distances.append(float(h - indices[-1]))
 
-        if not left_distances or not top_distances:
-            return 0.5, 0.5
+        if (
+            len(left_distances) == 0 or
+            len(right_distances) == 0 or
+            len(top_distances) == 0 or
+            len(bottom_distances) == 0
+        ):
+            return {
+                "horizontal_ratio": 0.5,
+                "vertical_ratio": 0.5,
+                "left_mean": None,
+                "right_mean": None,
+                "top_mean": None,
+                "bottom_mean": None,
+                "inner_left_x": None,
+                "inner_right_x": None,
+                "inner_top_y": None,
+                "inner_bottom_y": None,
+                "card_width": int(w),
+                "card_height": int(h),
+            }
 
-        left_mean = np.mean(left_distances)
-        right_mean = np.mean(right_distances)
-        top_mean = np.mean(top_distances)
-        bottom_mean = np.mean(bottom_distances)
+        left_mean = self._trimmed_mean(left_distances)
+        right_mean = self._trimmed_mean(right_distances)
+        top_mean = self._trimmed_mean(top_distances)
+        bottom_mean = self._trimmed_mean(bottom_distances)
+
+        if (
+            left_mean is None or right_mean is None or
+            top_mean is None or bottom_mean is None
+        ):
+            return {
+                "horizontal_ratio": 0.5,
+                "vertical_ratio": 0.5,
+                "left_mean": None,
+                "right_mean": None,
+                "top_mean": None,
+                "bottom_mean": None,
+                "inner_left_x": None,
+                "inner_right_x": None,
+                "inner_top_y": None,
+                "inner_bottom_y": None,
+                "card_width": int(w),
+                "card_height": int(h),
+            }
 
         horizontal_ratio = min(left_mean, right_mean) / max(left_mean, right_mean)
         vertical_ratio = min(top_mean, bottom_mean) / max(top_mean, bottom_mean)
 
-        return float(horizontal_ratio), float(vertical_ratio)
+        inner_left_x = left_mean
+        inner_right_x = float(w - right_mean)
+        inner_top_y = top_mean
+        inner_bottom_y = float(h - bottom_mean)
+
+        return {
+            "horizontal_ratio": float(horizontal_ratio),
+            "vertical_ratio": float(vertical_ratio),
+            "left_mean": round(float(left_mean), 2),
+            "right_mean": round(float(right_mean), 2),
+            "top_mean": round(float(top_mean), 2),
+            "bottom_mean": round(float(bottom_mean), 2),
+            "inner_left_x": round(float(inner_left_x), 2),
+            "inner_right_x": round(float(inner_right_x), 2),
+            "inner_top_y": round(float(inner_top_y), 2),
+            "inner_bottom_y": round(float(inner_bottom_y), 2),
+            "card_width": int(w),
+            "card_height": int(h),
+        }
 
     # ---------------------------------------------------------
     # Edge feature
@@ -395,7 +461,6 @@ class VoodooRawEngine:
         if len(scores) == 1:
             return float(scores[0])
 
-        # worst + second-worst blend for stability
         final_score = (scores[0] * 0.65) + (scores[1] * 0.35)
 
         return float(np.clip(final_score, 0, 1))
@@ -407,8 +472,25 @@ class VoodooRawEngine:
     def analyze_array(self, image_array):
         target_width = 1000
         h, w = image_array.shape[:2]
-        scale = target_width / w
-        image = cv2.resize(image_array, (target_width, int(h * scale)))
+
+        if w <= 0 or h <= 0:
+            return {
+                "horizontal_ratio": 0.5,
+                "vertical_ratio": 0.5,
+                "edge_score": 0.5,
+                "corner_score": 0.5,
+                "confidence": 0.0,
+                "inner_left_x": None,
+                "inner_right_x": None,
+                "inner_top_y": None,
+                "inner_bottom_y": None,
+                "image_width": None,
+                "image_height": None,
+            }
+
+        scale = target_width / float(w)
+        resized_h = int(h * scale)
+        image = cv2.resize(image_array, (target_width, resized_h))
 
         bbox = self.detect_card_bbox(image)
 
@@ -418,21 +500,58 @@ class VoodooRawEngine:
                 "vertical_ratio": 0.5,
                 "edge_score": 0.5,
                 "corner_score": 0.5,
-                "confidence": 0.0
+                "confidence": 0.0,
+                "inner_left_x": None,
+                "inner_right_x": None,
+                "inner_top_y": None,
+                "inner_bottom_y": None,
+                "image_width": int(image.shape[1]),
+                "image_height": int(image.shape[0]),
             }
 
         x, y, w2, h2 = bbox
         card = image[y:y+h2, x:x+w2]
 
-        h_ratio, v_ratio = self.compute_centering(card)
+        centering = self.compute_centering(card)
         edge_score = self.compute_edge_score(card)
         corner_score = self.compute_corner_score(card)
 
+        inner_left_x = None
+        inner_right_x = None
+        inner_top_y = None
+        inner_bottom_y = None
+
+        if centering["inner_left_x"] is not None:
+            inner_left_x = float(x) + float(centering["inner_left_x"])
+        if centering["inner_right_x"] is not None:
+            inner_right_x = float(x) + float(centering["inner_right_x"])
+        if centering["inner_top_y"] is not None:
+            inner_top_y = float(y) + float(centering["inner_top_y"])
+        if centering["inner_bottom_y"] is not None:
+            inner_bottom_y = float(y) + float(centering["inner_bottom_y"])
+
         return {
-            "horizontal_ratio": h_ratio,
-            "vertical_ratio": v_ratio,
-            "edge_score": edge_score,
-            "corner_score": corner_score,
-            "confidence": 1.0
+            "horizontal_ratio": round(float(centering["horizontal_ratio"]), 4),
+            "vertical_ratio": round(float(centering["vertical_ratio"]), 4),
+            "edge_score": round(float(edge_score), 4),
+            "corner_score": round(float(corner_score), 4),
+            "confidence": 1.0,
+
+            "card_bbox_x": int(x),
+            "card_bbox_y": int(y),
+            "card_bbox_w": int(w2),
+            "card_bbox_h": int(h2),
+
+            "left_mean": centering["left_mean"],
+            "right_mean": centering["right_mean"],
+            "top_mean": centering["top_mean"],
+            "bottom_mean": centering["bottom_mean"],
+
+            "inner_left_x": None if inner_left_x is None else round(float(inner_left_x), 2),
+            "inner_right_x": None if inner_right_x is None else round(float(inner_right_x), 2),
+            "inner_top_y": None if inner_top_y is None else round(float(inner_top_y), 2),
+            "inner_bottom_y": None if inner_bottom_y is None else round(float(inner_bottom_y), 2),
+
+            "image_width": int(image.shape[1]),
+            "image_height": int(image.shape[0]),
         }
-        
