@@ -196,7 +196,7 @@ class VoodooRawEngine:
         self.corner_engine = VoodooCornerCloseupEngine()
         self.target_width = 1000
         self.warp_width = 750
-        self.warp_height = 1050  # sports-card-ish portrait ratio
+        self.warp_height = 1050
 
     # ---------------------------------------------------------
     # Detect dominant card bounding box
@@ -288,7 +288,6 @@ class VoodooRawEngine:
         if best_quad is not None:
             return self.order_points(best_quad)
 
-        # fallback: minAreaRect on largest usable contour
         for cnt in contours[:8]:
             area = cv2.contourArea(cnt)
             if area < image_area * 0.20:
@@ -341,6 +340,29 @@ class VoodooRawEngine:
 
         return float(np.mean(arr))
 
+    def _pick_border_candidate(self, grad, threshold=8.0, prefer="second"):
+        candidates = np.where(grad > threshold)[0]
+        if len(candidates) == 0:
+            return None
+
+        if prefer == "second":
+            if len(candidates) >= 2:
+                return int(candidates[1])
+            return int(candidates[0])
+
+        if prefer == "second_from_end":
+            if len(candidates) >= 2:
+                return int(candidates[-2])
+            return int(candidates[-1])
+
+        if prefer == "first":
+            return int(candidates[0])
+
+        if prefer == "last":
+            return int(candidates[-1])
+
+        return int(candidates[0])
+
     def _detect_left_border_points(self, gray):
         h, w = gray.shape
         x_min = max(6, int(w * 0.04))
@@ -353,10 +375,11 @@ class VoodooRawEngine:
                 continue
 
             grad = np.abs(np.diff(row))
-            x_rel = int(np.argmax(grad))
+            x_rel = self._pick_border_candidate(grad, threshold=8.0, prefer="second")
+            if x_rel is None:
+                continue
 
-            if grad[x_rel] > 8:
-                points.append(float(x_min + x_rel))
+            points.append(float(x_min + x_rel))
 
         return points
 
@@ -372,11 +395,12 @@ class VoodooRawEngine:
                 continue
 
             grad = np.abs(np.diff(row))
-            rel_x = int(np.argmax(grad))
-            x = x_min + rel_x
+            x_rel = self._pick_border_candidate(grad, threshold=8.0, prefer="second_from_end")
+            if x_rel is None:
+                continue
 
-            if grad[rel_x] > 8:
-                points.append(float(w - x))
+            x = x_min + x_rel
+            points.append(float(w - x))
 
         return points
 
@@ -392,10 +416,11 @@ class VoodooRawEngine:
                 continue
 
             grad = np.abs(np.diff(col))
-            y_rel = int(np.argmax(grad))
+            y_rel = self._pick_border_candidate(grad, threshold=8.0, prefer="second")
+            if y_rel is None:
+                continue
 
-            if grad[y_rel] > 8:
-                points.append(float(y_min + y_rel))
+            points.append(float(y_min + y_rel))
 
         return points
 
@@ -411,11 +436,12 @@ class VoodooRawEngine:
                 continue
 
             grad = np.abs(np.diff(col))
-            rel_y = int(np.argmax(grad))
-            y = y_min + rel_y
+            y_rel = self._pick_border_candidate(grad, threshold=8.0, prefer="second_from_end")
+            if y_rel is None:
+                continue
 
-            if grad[rel_y] > 8:
-                points.append(float(h - y))
+            y = y_min + y_rel
+            points.append(float(h - y))
 
         return points
 
@@ -614,7 +640,6 @@ class VoodooRawEngine:
                 "image_height": int(image.shape[0]),
             }
 
-        # Prefer true perspective correction when possible
         used_perspective = quad is not None
 
         if used_perspective:
@@ -682,7 +707,6 @@ class VoodooRawEngine:
                 "quad_bottom_left_y": round(float(quad[3][1]), 2),
             }
 
-        # Fallback path: bbox crop only
         x, y, w2, h2 = bbox
         card = image[y:y+h2, x:x+w2]
 
