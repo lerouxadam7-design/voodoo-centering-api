@@ -24,10 +24,6 @@ class VoodooCornerCloseupEngine:
         self.dark_mean_floor = 18.0
         self.bright_mean_ceiling = 245.0
 
-    # --------------------------------------------------------
-    # Quality checks
-    # --------------------------------------------------------
-
     def image_quality_ok(self, patch):
         if patch is None:
             return False
@@ -48,10 +44,6 @@ class VoodooCornerCloseupEngine:
 
         return True
 
-    # --------------------------------------------------------
-    # Orientation normalization
-    # --------------------------------------------------------
-
     def normalize_to_top_left(self, patch, orientation="top_left"):
         if orientation == "top_left":
             return patch
@@ -63,15 +55,7 @@ class VoodooCornerCloseupEngine:
             return cv2.rotate(patch, cv2.ROTATE_180)
         return patch
 
-    # --------------------------------------------------------
-    # Border finding helpers
-    # --------------------------------------------------------
-
     def detect_top_border(self, gray):
-        """
-        Find the top border profile across x positions.
-        Returns y positions for detected border points.
-        """
         h, w = gray.shape
         search_h = max(12, int(h * 0.45))
         rows = []
@@ -88,10 +72,6 @@ class VoodooCornerCloseupEngine:
         return rows
 
     def detect_left_border(self, gray):
-        """
-        Find the left border profile across y positions.
-        Returns x positions for detected border points.
-        """
         h, w = gray.shape
         search_w = max(12, int(w * 0.45))
         cols = []
@@ -106,10 +86,6 @@ class VoodooCornerCloseupEngine:
             cols.append((y, x))
 
         return cols
-
-    # --------------------------------------------------------
-    # Feature extraction
-    # --------------------------------------------------------
 
     def extract_features(self, patch):
         gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
@@ -128,9 +104,6 @@ class VoodooCornerCloseupEngine:
 
         gray_region = gray[:radius, :radius]
 
-        # --------------------------
-        # 1. Border detection
-        # --------------------------
         top_pts = self.detect_top_border(gray_region)
         left_pts = self.detect_left_border(gray_region)
 
@@ -145,16 +118,10 @@ class VoodooCornerCloseupEngine:
         top_y = np.array([p[1] for p in top_pts], dtype=np.float32)
         left_x = np.array([p[1] for p in left_pts], dtype=np.float32)
 
-        # --------------------------
-        # 2. Border continuity
-        # --------------------------
         top_std = float(np.std(top_y))
         left_std = float(np.std(left_x))
         continuity_score = 1.0 - np.clip(((top_std + left_std) / 2.0) / 10.0, 0, 1)
 
-        # --------------------------
-        # 3. Tip sharpness
-        # --------------------------
         top_y_med = float(np.median(top_y))
         left_x_med = float(np.median(left_x))
 
@@ -162,9 +129,6 @@ class VoodooCornerCloseupEngine:
         shape_score = 1.0 - np.clip(tip_distance / (radius * 0.65), 0, 1)
         shape_score = float(np.clip((shape_score * 0.75) + (continuity_score * 0.25), 0, 1))
 
-        # --------------------------
-        # 4. Whitening penalty
-        # --------------------------
         border_band = max(3, int(radius * 0.12))
         top_band = gray_region[:border_band, :]
         left_band = gray_region[:, :border_band]
@@ -174,9 +138,6 @@ class VoodooCornerCloseupEngine:
         whitening_density = float(np.mean(bright_mask.astype(np.float32)))
         whitening_penalty = float(np.clip(whitening_density * 1.8, 0, 0.25))
 
-        # --------------------------
-        # 5. Confidence
-        # --------------------------
         lap_var = float(cv2.Laplacian(gray_region, cv2.CV_64F).var())
         mean_val = float(np.mean(gray_region))
 
@@ -190,10 +151,6 @@ class VoodooCornerCloseupEngine:
             "whitening_penalty": float(whitening_penalty),
             "confidence": float(confidence),
         }
-
-    # --------------------------------------------------------
-    # Main patch analysis
-    # --------------------------------------------------------
 
     def analyze_patch(self, patch, orientation="top_left"):
         if patch is None:
@@ -237,6 +194,9 @@ class VoodooCornerCloseupEngine:
 class VoodooRawEngine:
     def __init__(self):
         self.corner_engine = VoodooCornerCloseupEngine()
+        self.target_width = 1000
+        self.warp_width = 750
+        self.warp_height = 1050  # sports-card-ish portrait ratio
 
     # ---------------------------------------------------------
     # Detect dominant card bounding box
@@ -277,6 +237,89 @@ class VoodooRawEngine:
         return x, y, w, h
 
     # ---------------------------------------------------------
+    # Perspective helpers
+    # ---------------------------------------------------------
+
+    def order_points(self, pts):
+        pts = np.array(pts, dtype=np.float32)
+        s = pts.sum(axis=1)
+        diff = np.diff(pts, axis=1)
+
+        top_left = pts[np.argmin(s)]
+        bottom_right = pts[np.argmax(s)]
+        top_right = pts[np.argmin(diff)]
+        bottom_left = pts[np.argmax(diff)]
+
+        return np.array([top_left, top_right, bottom_right, bottom_left], dtype=np.float32)
+
+    def find_card_quad(self, image):
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (7, 7), 0)
+
+        edges = cv2.Canny(blur, 50, 150)
+        kernel = np.ones((5, 5), np.uint8)
+        edges = cv2.dilate(edges, kernel, iterations=1)
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        image_area = image.shape[0] * image.shape[1]
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+        best_quad = None
+        best_area = 0.0
+
+        for cnt in contours[:12]:
+            area = cv2.contourArea(cnt)
+            if area < image_area * 0.20:
+                continue
+
+            peri = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+
+            if len(approx) == 4:
+                quad = approx.reshape(4, 2).astype(np.float32)
+                if area > best_area:
+                    best_quad = quad
+                    best_area = area
+
+        if best_quad is not None:
+            return self.order_points(best_quad)
+
+        # fallback: minAreaRect on largest usable contour
+        for cnt in contours[:8]:
+            area = cv2.contourArea(cnt)
+            if area < image_area * 0.20:
+                continue
+            rect = cv2.minAreaRect(cnt)
+            box = cv2.boxPoints(rect)
+            box = np.array(box, dtype=np.float32)
+            return self.order_points(box)
+
+        return None
+
+    def warp_card(self, image, quad):
+        dst = np.array([
+            [0, 0],
+            [self.warp_width - 1, 0],
+            [self.warp_width - 1, self.warp_height - 1],
+            [0, self.warp_height - 1],
+        ], dtype=np.float32)
+
+        M = cv2.getPerspectiveTransform(quad, dst)
+        warped = cv2.warpPerspective(image, M, (self.warp_width, self.warp_height))
+        Minv = cv2.getPerspectiveTransform(dst, quad)
+
+        return warped, M, Minv
+
+    def map_warp_point_to_image(self, Minv, x, y):
+        pt = np.array([[[float(x), float(y)]]], dtype=np.float32)
+        mapped = cv2.perspectiveTransform(pt, Minv)[0][0]
+        return float(mapped[0]), float(mapped[1])
+
+    # ---------------------------------------------------------
     # Helpers
     # ---------------------------------------------------------
 
@@ -300,29 +343,31 @@ class VoodooRawEngine:
 
     def _detect_left_border_points(self, gray):
         h, w = gray.shape
-        x_max = max(14, int(w * 0.22))
+        x_min = max(6, int(w * 0.04))
+        x_max = max(x_min + 10, int(w * 0.22))
         points = []
 
         for y in range(int(h * 0.18), int(h * 0.82)):
-            row = gray[y, :x_max].astype(np.float32)
+            row = gray[y, x_min:x_max].astype(np.float32)
             if len(row) < 6:
                 continue
 
             grad = np.abs(np.diff(row))
-            x = int(np.argmax(grad))
+            x_rel = int(np.argmax(grad))
 
-            if grad[x] > 8:
-                points.append(float(x))
+            if grad[x_rel] > 8:
+                points.append(float(x_min + x_rel))
 
         return points
 
     def _detect_right_border_points(self, gray):
         h, w = gray.shape
-        x_min = min(w - 2, int(w * 0.78))
+        x_min = min(w - 12, int(w * 0.78))
+        x_max = max(x_min + 10, int(w * 0.96))
         points = []
 
         for y in range(int(h * 0.18), int(h * 0.82)):
-            row = gray[y, x_min:w].astype(np.float32)
+            row = gray[y, x_min:x_max].astype(np.float32)
             if len(row) < 6:
                 continue
 
@@ -337,29 +382,31 @@ class VoodooRawEngine:
 
     def _detect_top_border_points(self, gray):
         h, w = gray.shape
-        y_max = max(14, int(h * 0.22))
+        y_min = max(6, int(h * 0.04))
+        y_max = max(y_min + 10, int(h * 0.22))
         points = []
 
         for x in range(int(w * 0.18), int(w * 0.82)):
-            col = gray[:y_max, x].astype(np.float32)
+            col = gray[y_min:y_max, x].astype(np.float32)
             if len(col) < 6:
                 continue
 
             grad = np.abs(np.diff(col))
-            y = int(np.argmax(grad))
+            y_rel = int(np.argmax(grad))
 
-            if grad[y] > 8:
-                points.append(float(y))
+            if grad[y_rel] > 8:
+                points.append(float(y_min + y_rel))
 
         return points
 
     def _detect_bottom_border_points(self, gray):
         h, w = gray.shape
-        y_min = min(h - 2, int(h * 0.78))
+        y_min = min(h - 12, int(h * 0.78))
+        y_max = max(y_min + 10, int(h * 0.96))
         points = []
 
         for x in range(int(w * 0.18), int(w * 0.82)):
-            col = gray[y_min:h, x].astype(np.float32)
+            col = gray[y_min:y_max, x].astype(np.float32)
             if len(col) < 6:
                 continue
 
@@ -373,11 +420,11 @@ class VoodooRawEngine:
         return points
 
     # ---------------------------------------------------------
-    # Centering
+    # Centering on perspective-corrected card
     # ---------------------------------------------------------
 
-    def compute_centering(self, card_img):
-        gray = cv2.cvtColor(card_img, cv2.COLOR_BGR2GRAY)
+    def compute_centering(self, warped_card):
+        gray = cv2.cvtColor(warped_card, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
 
         h, w = gray.shape
@@ -520,9 +567,7 @@ class VoodooRawEngine:
         if len(scores) == 1:
             return float(scores[0])
 
-        # worst + second-worst blend for stability
         final_score = (scores[0] * 0.65) + (scores[1] * 0.35)
-
         return float(np.clip(final_score, 0, 1))
 
     # ---------------------------------------------------------
@@ -530,7 +575,6 @@ class VoodooRawEngine:
     # ---------------------------------------------------------
 
     def analyze_array(self, image_array):
-        target_width = 1000
         h, w = image_array.shape[:2]
 
         if w <= 0 or h <= 0:
@@ -548,13 +592,14 @@ class VoodooRawEngine:
                 "image_height": None,
             }
 
-        scale = target_width / float(w)
+        scale = self.target_width / float(w)
         resized_h = int(h * scale)
-        image = cv2.resize(image_array, (target_width, resized_h))
+        image = cv2.resize(image_array, (self.target_width, resized_h))
 
+        quad = self.find_card_quad(image)
         bbox = self.detect_card_bbox(image)
 
-        if bbox is None:
+        if quad is None and bbox is None:
             return {
                 "horizontal_ratio": 0.5,
                 "vertical_ratio": 0.5,
@@ -569,6 +614,75 @@ class VoodooRawEngine:
                 "image_height": int(image.shape[0]),
             }
 
+        # Prefer true perspective correction when possible
+        used_perspective = quad is not None
+
+        if used_perspective:
+            warped, M, Minv = self.warp_card(image, quad)
+            centering = self.compute_centering(warped)
+            edge_score = self.compute_edge_score(warped)
+            corner_score = self.compute_corner_score(warped)
+
+            inner_left_x = None
+            inner_right_x = None
+            inner_top_y = None
+            inner_bottom_y = None
+
+            if centering["inner_left_x"] is not None:
+                mapped_x, _ = self.map_warp_point_to_image(Minv, centering["inner_left_x"], self.warp_height * 0.50)
+                inner_left_x = mapped_x
+
+            if centering["inner_right_x"] is not None:
+                mapped_x, _ = self.map_warp_point_to_image(Minv, centering["inner_right_x"], self.warp_height * 0.50)
+                inner_right_x = mapped_x
+
+            if centering["inner_top_y"] is not None:
+                _, mapped_y = self.map_warp_point_to_image(Minv, self.warp_width * 0.50, centering["inner_top_y"])
+                inner_top_y = mapped_y
+
+            if centering["inner_bottom_y"] is not None:
+                _, mapped_y = self.map_warp_point_to_image(Minv, self.warp_width * 0.50, centering["inner_bottom_y"])
+                inner_bottom_y = mapped_y
+
+            card_bbox_x, card_bbox_y, card_bbox_w, card_bbox_h = cv2.boundingRect(quad.astype(np.int32))
+
+            return {
+                "horizontal_ratio": round(float(centering["horizontal_ratio"]), 4),
+                "vertical_ratio": round(float(centering["vertical_ratio"]), 4),
+                "edge_score": round(float(edge_score), 4),
+                "corner_score": round(float(corner_score), 4),
+                "confidence": 1.0,
+
+                "card_bbox_x": int(card_bbox_x),
+                "card_bbox_y": int(card_bbox_y),
+                "card_bbox_w": int(card_bbox_w),
+                "card_bbox_h": int(card_bbox_h),
+
+                "left_mean": centering["left_mean"],
+                "right_mean": centering["right_mean"],
+                "top_mean": centering["top_mean"],
+                "bottom_mean": centering["bottom_mean"],
+
+                "inner_left_x": None if inner_left_x is None else round(float(inner_left_x), 2),
+                "inner_right_x": None if inner_right_x is None else round(float(inner_right_x), 2),
+                "inner_top_y": None if inner_top_y is None else round(float(inner_top_y), 2),
+                "inner_bottom_y": None if inner_bottom_y is None else round(float(inner_bottom_y), 2),
+
+                "image_width": int(image.shape[1]),
+                "image_height": int(image.shape[0]),
+
+                "used_perspective_warp": True,
+                "quad_top_left_x": round(float(quad[0][0]), 2),
+                "quad_top_left_y": round(float(quad[0][1]), 2),
+                "quad_top_right_x": round(float(quad[1][0]), 2),
+                "quad_top_right_y": round(float(quad[1][1]), 2),
+                "quad_bottom_right_x": round(float(quad[2][0]), 2),
+                "quad_bottom_right_y": round(float(quad[2][1]), 2),
+                "quad_bottom_left_x": round(float(quad[3][0]), 2),
+                "quad_bottom_left_y": round(float(quad[3][1]), 2),
+            }
+
+        # Fallback path: bbox crop only
         x, y, w2, h2 = bbox
         card = image[y:y+h2, x:x+w2]
 
@@ -614,4 +728,6 @@ class VoodooRawEngine:
 
             "image_width": int(image.shape[1]),
             "image_height": int(image.shape[0]),
+
+            "used_perspective_warp": False,
         }
