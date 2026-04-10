@@ -132,15 +132,15 @@ def compute_speckle_score(image, valid_mask):
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     diff = cv2.absdiff(gray, blur)
 
-    # Slightly higher threshold than before to reduce false small-noise penalties
-    _, blob_map = cv2.threshold(diff, 20, 255, cv2.THRESH_BINARY)
+    # Narrower adjustment:
+    # slightly higher threshold and slightly lower density multiplier
+    _, blob_map = cv2.threshold(diff, 21, 255, cv2.THRESH_BINARY)
 
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(blob_map, connectivity=8)
     filtered = np.zeros_like(blob_map)
 
     for i in range(1, num_labels):
         area = stats[i, cv2.CC_STAT_AREA]
-        # Tighten upper limit slightly to reduce larger texture / print artifacts
         if 1 <= area <= 16:
             filtered[labels == i] = 255
 
@@ -151,8 +151,8 @@ def compute_speckle_score(image, valid_mask):
 
     density = blob_pixels / float(valid_pixels)
 
-    # Softened from 8.0 to 6.8 (~15% less aggressive)
-    raw = density * 6.8
+    # previously 6.8, now another ~10% softer
+    raw = density * 6.1
 
     return float(np.clip(raw, 0.0, 1.0))
 
@@ -180,8 +180,8 @@ def compute_gloss_score(image, glare_mask):
         0.20 * spread_score
     )
 
-    # Soften gloss penalty by about 12%
-    raw *= 0.88
+    # previously 0.88, now another ~10% softer
+    raw *= 0.79
 
     return float(np.clip(raw, 0.0, 1.0))
 
@@ -204,11 +204,11 @@ def analyze_surface(image):
         scratch_score *= 0.90
         speckle_score *= 0.92
 
-    # Keep scratch weight unchanged, soften speckle + gloss contribution slightly
+    # Keep structure the same, just narrow the speckle/gloss pull a bit more
     surface_score = (
-        0.54 * scratch_score +
-        0.24 * speckle_score +
-        0.17 * gloss_score
+        0.56 * scratch_score +
+        0.21 * speckle_score +
+        0.14 * gloss_score
     )
 
     if valid_surface_fraction < 0.50:
