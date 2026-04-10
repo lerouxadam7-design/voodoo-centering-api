@@ -29,6 +29,112 @@ def decode_image(contents: bytes, max_dim: int = 1200):
     return image
 
 
+def to_float_or_none(value):
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def find_first_key(d: dict, keys):
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return None
+
+
+def enrich_centering_coordinates(result: dict, image) -> dict:
+    """
+    Best-effort coordinate extraction from the raw centering engine result.
+
+    This does NOT assume one exact output schema from VoodooRawEngine.
+    It checks several likely key names and returns standardized keys:
+      - inner_left_x
+      - inner_right_x
+      - inner_top_y
+      - inner_bottom_y
+
+    If the engine does not expose coordinates yet, these remain None.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    h, w = image.shape[:2]
+
+    left_x = find_first_key(result, [
+        "inner_left_x", "left_x", "card_left_x", "left_border_x", "detected_left_x"
+    ])
+    right_x = find_first_key(result, [
+        "inner_right_x", "right_x", "card_right_x", "right_border_x", "detected_right_x"
+    ])
+    top_y = find_first_key(result, [
+        "inner_top_y", "top_y", "card_top_y", "top_border_y", "detected_top_y"
+    ])
+    bottom_y = find_first_key(result, [
+        "inner_bottom_y", "bottom_y", "card_bottom_y", "bottom_border_y", "detected_bottom_y"
+    ])
+
+    left_margin = find_first_key(result, [
+        "left_margin_px", "left_margin", "left_border_px", "left_border"
+    ])
+    right_margin = find_first_key(result, [
+        "right_margin_px", "right_margin", "right_border_px", "right_border"
+    ])
+    top_margin = find_first_key(result, [
+        "top_margin_px", "top_margin", "top_border_px", "top_border"
+    ])
+    bottom_margin = find_first_key(result, [
+        "bottom_margin_px", "bottom_margin", "bottom_border_px", "bottom_border"
+    ])
+
+    left_x = to_float_or_none(left_x)
+    right_x = to_float_or_none(right_x)
+    top_y = to_float_or_none(top_y)
+    bottom_y = to_float_or_none(bottom_y)
+
+    left_margin = to_float_or_none(left_margin)
+    right_margin = to_float_or_none(right_margin)
+    top_margin = to_float_or_none(top_margin)
+    bottom_margin = to_float_or_none(bottom_margin)
+
+    # If engine gave margins instead of x/y coordinates, convert them.
+    if left_x is None and left_margin is not None:
+        left_x = left_margin
+    if right_x is None and right_margin is not None:
+        right_x = w - right_margin
+    if top_y is None and top_margin is not None:
+        top_y = top_margin
+    if bottom_y is None and bottom_margin is not None:
+        bottom_y = h - bottom_margin
+
+    # Basic validation.
+    if left_x is not None and not (0 <= left_x <= w):
+        left_x = None
+    if right_x is not None and not (0 <= right_x <= w):
+        right_x = None
+    if top_y is not None and not (0 <= top_y <= h):
+        top_y = None
+    if bottom_y is not None and not (0 <= bottom_y <= h):
+        bottom_y = None
+
+    if left_x is not None and right_x is not None and right_x <= left_x:
+        left_x, right_x = None, None
+    if top_y is not None and bottom_y is not None and bottom_y <= top_y:
+        top_y, bottom_y = None, None
+
+    result["inner_left_x"] = None if left_x is None else round(float(left_x), 2)
+    result["inner_right_x"] = None if right_x is None else round(float(right_x), 2)
+    result["inner_top_y"] = None if top_y is None else round(float(top_y), 2)
+    result["inner_bottom_y"] = None if bottom_y is None else round(float(bottom_y), 2)
+
+    result["image_width"] = int(w)
+    result["image_height"] = int(h)
+
+    return result
+
+
 def crop_surface_roi(image, border_frac: float = 0.06):
     h, w = image.shape[:2]
     x1 = int(w * border_frac)
@@ -132,8 +238,6 @@ def compute_speckle_score(image, valid_mask):
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     diff = cv2.absdiff(gray, blur)
 
-    # Narrower adjustment:
-    # slightly higher threshold and slightly lower density multiplier
     _, blob_map = cv2.threshold(diff, 21, 255, cv2.THRESH_BINARY)
 
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(blob_map, connectivity=8)
@@ -150,8 +254,6 @@ def compute_speckle_score(image, valid_mask):
     blob_pixels = np.count_nonzero(filtered)
 
     density = blob_pixels / float(valid_pixels)
-
-    # previously 6.8, now another ~10% softer
     raw = density * 6.1
 
     return float(np.clip(raw, 0.0, 1.0))
@@ -180,7 +282,6 @@ def compute_gloss_score(image, glare_mask):
         0.20 * spread_score
     )
 
-    # previously 0.88, now another ~10% softer
     raw *= 0.79
 
     return float(np.clip(raw, 0.0, 1.0))
@@ -204,7 +305,6 @@ def analyze_surface(image):
         scratch_score *= 0.90
         speckle_score *= 0.92
 
-    # Keep structure the same, just narrow the speckle/gloss pull a bit more
     surface_score = (
         0.56 * scratch_score +
         0.21 * speckle_score +
@@ -257,6 +357,11 @@ async def analyze(file: UploadFile = File(...)):
             return {"error": "Invalid image"}
 
         result = raw_engine.analyze_array(image)
+
+        if not isinstance(result, dict):
+            return {"error": "Centering engine returned invalid result"}
+
+        result = enrich_centering_coordinates(result, image)
         return result
 
     except Exception as e:
