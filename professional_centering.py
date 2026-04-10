@@ -319,49 +319,42 @@ class VoodooRawEngine:
         return float(mapped[0]), float(mapped[1])
 
     # ---------------------------------------------------------
-    # Helpers
+    # Clustering helper
     # ---------------------------------------------------------
 
-    def _trimmed_mean(self, values, trim_frac=0.18):
+    def _cluster_mean(self, values, bins=12):
         if not values:
             return None
 
         arr = np.array(values, dtype=np.float32)
-        arr.sort()
+        if len(arr) == 1:
+            return float(arr[0])
 
-        n = len(arr)
-        trim_n = int(n * trim_frac)
+        vmin = float(np.min(arr))
+        vmax = float(np.max(arr))
+        if vmax <= vmin:
+            return float(np.mean(arr))
 
-        if trim_n > 0 and n > (2 * trim_n):
-            arr = arr[trim_n:n - trim_n]
+        hist, edges = np.histogram(arr, bins=bins, range=(vmin, vmax))
+        idx = int(np.argmax(hist))
 
-        if len(arr) == 0:
-            return None
+        low = edges[idx]
+        high = edges[idx + 1]
 
-        return float(np.mean(arr))
+        cluster = arr[(arr >= low) & (arr <= high)]
+        if len(cluster) == 0:
+            return float(np.mean(arr))
 
-    def _pick_border_candidate(self, grad, threshold=8.0, prefer="second"):
-        candidates = np.where(grad > threshold)[0]
-        if len(candidates) == 0:
-            return None
+        return float(np.mean(cluster))
 
-        if prefer == "second":
-            if len(candidates) >= 2:
-                return int(candidates[1])
-            return int(candidates[0])
+    # ---------------------------------------------------------
+    # Border candidate helpers
+    # ---------------------------------------------------------
 
-        if prefer == "second_from_end":
-            if len(candidates) >= 2:
-                return int(candidates[-2])
-            return int(candidates[-1])
-
-        if prefer == "first":
-            return int(candidates[0])
-
-        if prefer == "last":
-            return int(candidates[-1])
-
-        return int(candidates[0])
+    def _strong_edge_candidates(self, grad, threshold=8.0):
+        if grad is None or len(grad) == 0:
+            return []
+        return [int(i) for i in np.where(grad > threshold)[0]]
 
     def _detect_left_border_points(self, gray):
         h, w = gray.shape
@@ -375,11 +368,12 @@ class VoodooRawEngine:
                 continue
 
             grad = np.abs(np.diff(row))
-            x_rel = self._pick_border_candidate(grad, threshold=8.0, prefer="second")
-            if x_rel is None:
+            candidates = self._strong_edge_candidates(grad, threshold=8.0)
+            if not candidates:
                 continue
 
-            points.append(float(x_min + x_rel))
+            for x_rel in candidates:
+                points.append(float(x_min + x_rel))
 
         return points
 
@@ -395,12 +389,13 @@ class VoodooRawEngine:
                 continue
 
             grad = np.abs(np.diff(row))
-            x_rel = self._pick_border_candidate(grad, threshold=8.0, prefer="second_from_end")
-            if x_rel is None:
+            candidates = self._strong_edge_candidates(grad, threshold=8.0)
+            if not candidates:
                 continue
 
-            x = x_min + x_rel
-            points.append(float(w - x))
+            for x_rel in candidates:
+                x = x_min + x_rel
+                points.append(float(w - x))
 
         return points
 
@@ -416,11 +411,12 @@ class VoodooRawEngine:
                 continue
 
             grad = np.abs(np.diff(col))
-            y_rel = self._pick_border_candidate(grad, threshold=8.0, prefer="second")
-            if y_rel is None:
+            candidates = self._strong_edge_candidates(grad, threshold=8.0)
+            if not candidates:
                 continue
 
-            points.append(float(y_min + y_rel))
+            for y_rel in candidates:
+                points.append(float(y_min + y_rel))
 
         return points
 
@@ -436,12 +432,13 @@ class VoodooRawEngine:
                 continue
 
             grad = np.abs(np.diff(col))
-            y_rel = self._pick_border_candidate(grad, threshold=8.0, prefer="second_from_end")
-            if y_rel is None:
+            candidates = self._strong_edge_candidates(grad, threshold=8.0)
+            if not candidates:
                 continue
 
-            y = y_min + y_rel
-            points.append(float(h - y))
+            for y_rel in candidates:
+                y = y_min + y_rel
+                points.append(float(h - y))
 
         return points
 
@@ -481,10 +478,10 @@ class VoodooRawEngine:
                 "card_height": int(h),
             }
 
-        left_mean = self._trimmed_mean(left_distances)
-        right_mean = self._trimmed_mean(right_distances)
-        top_mean = self._trimmed_mean(top_distances)
-        bottom_mean = self._trimmed_mean(bottom_distances)
+        left_mean = self._cluster_mean(left_distances)
+        right_mean = self._cluster_mean(right_distances)
+        top_mean = self._cluster_mean(top_distances)
+        bottom_mean = self._cluster_mean(bottom_distances)
 
         if (
             left_mean is None or right_mean is None or
