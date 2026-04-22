@@ -326,6 +326,22 @@ class VoodooRawEngine:
         mapped = cv2.perspectiveTransform(pt, Minv)[0][0]
         return float(mapped[0]), float(mapped[1])
 
+    def _safe_map_warp_point_to_image(self, Minv, x, y, image_w, image_h):
+        try:
+            mapped_x, mapped_y = self.map_warp_point_to_image(Minv, x, y)
+        except Exception:
+            return None
+
+        if not np.isfinite(mapped_x) or not np.isfinite(mapped_y):
+            return None
+
+        if mapped_x < -5 or mapped_x > image_w + 5 or mapped_y < -5 or mapped_y > image_h + 5:
+            return None
+
+        mapped_x = float(np.clip(mapped_x, 0.0, float(image_w)))
+        mapped_y = float(np.clip(mapped_y, 0.0, float(image_h)))
+        return mapped_x, mapped_y
+
     # ---------------------------------------------------------
     # Clustering helper
     # ---------------------------------------------------------
@@ -701,26 +717,79 @@ class VoodooRawEngine:
             edge_score = self.compute_edge_score(warped)
             corner_score = self.compute_corner_score(warped)
 
+            image_w = int(image.shape[1])
+            image_h = int(image.shape[0])
+
             inner_left_x = None
             inner_right_x = None
             inner_top_y = None
             inner_bottom_y = None
 
             if centering["inner_left_x"] is not None:
-                mapped_x, _ = self.map_warp_point_to_image(Minv, centering["inner_left_x"], self.warp_height * 0.50)
-                inner_left_x = mapped_x
+                mapped = self._safe_map_warp_point_to_image(
+                    Minv,
+                    centering["inner_left_x"],
+                    self.warp_height * 0.50,
+                    image_w,
+                    image_h,
+                )
+                if mapped is not None:
+                    inner_left_x = mapped[0]
 
             if centering["inner_right_x"] is not None:
-                mapped_x, _ = self.map_warp_point_to_image(Minv, centering["inner_right_x"], self.warp_height * 0.50)
-                inner_right_x = mapped_x
+                mapped = self._safe_map_warp_point_to_image(
+                    Minv,
+                    centering["inner_right_x"],
+                    self.warp_height * 0.50,
+                    image_w,
+                    image_h,
+                )
+                if mapped is not None:
+                    inner_right_x = mapped[0]
 
             if centering["inner_top_y"] is not None:
-                _, mapped_y = self.map_warp_point_to_image(Minv, self.warp_width * 0.50, centering["inner_top_y"])
-                inner_top_y = mapped_y
+                mapped = self._safe_map_warp_point_to_image(
+                    Minv,
+                    self.warp_width * 0.50,
+                    centering["inner_top_y"],
+                    image_w,
+                    image_h,
+                )
+                if mapped is not None:
+                    inner_top_y = mapped[1]
 
             if centering["inner_bottom_y"] is not None:
-                _, mapped_y = self.map_warp_point_to_image(Minv, self.warp_width * 0.50, centering["inner_bottom_y"])
-                inner_bottom_y = mapped_y
+                mapped = self._safe_map_warp_point_to_image(
+                    Minv,
+                    self.warp_width * 0.50,
+                    centering["inner_bottom_y"],
+                    image_w,
+                    image_h,
+                )
+                if mapped is not None:
+                    inner_bottom_y = mapped[1]
+
+            # fallback if warped measurement exists but mapped coordinate failed
+            if inner_left_x is None and centering["inner_left_x"] is not None:
+                inner_left_x = round(float(np.clip(np.min(quad[:, 0]) + centering["left_mean"], 0, image_w)), 2)
+
+            if inner_right_x is None and centering["inner_right_x"] is not None:
+                inner_right_x = round(float(np.clip(np.max(quad[:, 0]) - centering["right_mean"], 0, image_w)), 2)
+
+            if inner_top_y is None and centering["inner_top_y"] is not None:
+                inner_top_y = round(float(np.clip(np.min(quad[:, 1]) + centering["top_mean"], 0, image_h)), 2)
+
+            if inner_bottom_y is None and centering["inner_bottom_y"] is not None:
+                inner_bottom_y = round(float(np.clip(np.max(quad[:, 1]) - centering["bottom_mean"], 0, image_h)), 2)
+
+            mapped_presence = [
+                inner_left_x is not None,
+                inner_right_x is not None,
+                inner_top_y is not None,
+                inner_bottom_y is not None,
+            ]
+            mapped_fraction = float(np.mean(np.array(mapped_presence, dtype=np.float32)))
+            response_confidence = float(np.clip(centering["centering_confidence"] * mapped_fraction, 0, 1))
 
             card_bbox_x, card_bbox_y, card_bbox_w, card_bbox_h = cv2.boundingRect(quad.astype(np.int32))
 
@@ -729,7 +798,7 @@ class VoodooRawEngine:
                 "vertical_ratio": round(float(centering["vertical_ratio"]), 4),
                 "edge_score": round(float(edge_score), 4),
                 "corner_score": round(float(corner_score), 4),
-                "confidence": round(float(centering["centering_confidence"]), 3),
+                "confidence": round(float(response_confidence), 3),
 
                 "card_bbox_x": int(card_bbox_x),
                 "card_bbox_y": int(card_bbox_y),
@@ -746,8 +815,8 @@ class VoodooRawEngine:
                 "inner_top_y": None if inner_top_y is None else round(float(inner_top_y), 2),
                 "inner_bottom_y": None if inner_bottom_y is None else round(float(inner_bottom_y), 2),
 
-                "image_width": int(image.shape[1]),
-                "image_height": int(image.shape[0]),
+                "image_width": image_w,
+                "image_height": image_h,
 
                 "used_perspective_warp": True,
                 "quad_top_left_x": round(float(quad[0][0]), 2),
@@ -781,12 +850,20 @@ class VoodooRawEngine:
         if centering["inner_bottom_y"] is not None:
             inner_bottom_y = float(y) + float(centering["inner_bottom_y"])
 
+        presence = [
+            inner_left_x is not None,
+            inner_right_x is not None,
+            inner_top_y is not None,
+            inner_bottom_y is not None,
+        ]
+        response_confidence = float(np.clip(centering["centering_confidence"] * float(np.mean(np.array(presence, dtype=np.float32))), 0, 1))
+
         return {
             "horizontal_ratio": round(float(centering["horizontal_ratio"]), 4),
             "vertical_ratio": round(float(centering["vertical_ratio"]), 4),
             "edge_score": round(float(edge_score), 4),
             "corner_score": round(float(corner_score), 4),
-            "confidence": round(float(centering["centering_confidence"]), 3),
+            "confidence": round(float(response_confidence), 3),
 
             "card_bbox_x": int(x),
             "card_bbox_y": int(y),
