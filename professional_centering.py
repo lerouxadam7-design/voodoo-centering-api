@@ -198,6 +198,22 @@ class VoodooRawEngine:
         self.warp_width = 750
         self.warp_height = 1050
 
+        # inward border scan tuning
+        self.scan_smooth_window = 5
+        self.min_transition_strength = 10.0
+        self.min_border_offset_ratio = 0.02
+        self.max_border_offset_ratio = 0.25
+        self.min_scan_agreement_points = 12
+        self.local_consistency_tol = 10.0
+
+        # hybrid fallback thresholds
+        self.hybrid_min_confidence = 0.60
+        self.hybrid_min_ratio = 0.74
+        self.hybrid_max_side_spread = 34.0
+        self.hybrid_tiny_mean_x = 26.0
+        self.hybrid_tiny_mean_y = 30.0
+        self.hybrid_old_max_side_spread = 42.0
+
     # ---------------------------------------------------------
     # Detect dominant card bounding box
     # ---------------------------------------------------------
@@ -327,7 +343,7 @@ class VoodooRawEngine:
         if not np.isfinite(mapped_x) or not np.isfinite(mapped_y):
             return None
 
-        if mapped_x < -10 or mapped_x > image_w + 10 or mapped_y < -10 or mapped_y > image_h + 10:
+        if mapped_x < -5 or mapped_x > image_w + 5 or mapped_y < -5 or mapped_y > image_h + 5:
             return None
 
         mapped_x = float(np.clip(mapped_x, 0.0, float(image_w)))
@@ -364,7 +380,7 @@ class VoodooRawEngine:
         return float(np.mean(cluster))
 
     # ---------------------------------------------------------
-    # Border candidate helpers
+    # Old gradient-candidate helpers
     # ---------------------------------------------------------
 
     def _strong_edge_candidates(self, grad, threshold=8.0):
@@ -372,7 +388,7 @@ class VoodooRawEngine:
             return []
         return [int(i) for i in np.where(grad > threshold)[0]]
 
-    def _detect_left_border_points(self, gray):
+    def _detect_left_border_points_old(self, gray):
         h, w = gray.shape
         x_min = max(6, int(w * 0.04))
         x_max = max(x_min + 10, int(w * 0.22))
@@ -393,7 +409,7 @@ class VoodooRawEngine:
 
         return points
 
-    def _detect_right_border_points(self, gray):
+    def _detect_right_border_points_old(self, gray):
         h, w = gray.shape
         x_min = min(w - 12, int(w * 0.78))
         x_max = max(x_min + 10, int(w * 0.96))
@@ -415,7 +431,7 @@ class VoodooRawEngine:
 
         return points
 
-    def _detect_top_border_points(self, gray):
+    def _detect_top_border_points_old(self, gray):
         h, w = gray.shape
         y_min = max(6, int(h * 0.04))
         y_max = max(y_min + 10, int(h * 0.22))
@@ -436,7 +452,7 @@ class VoodooRawEngine:
 
         return points
 
-    def _detect_bottom_border_points(self, gray):
+    def _detect_bottom_border_points_old(self, gray):
         h, w = gray.shape
         y_min = min(h - 12, int(h * 0.78))
         y_max = max(y_min + 10, int(h * 0.96))
@@ -459,40 +475,129 @@ class VoodooRawEngine:
         return points
 
     # ---------------------------------------------------------
-    # Centering on perspective-corrected card
+    # Inward-scan helpers
     # ---------------------------------------------------------
 
-    def compute_centering(self, warped_card):
-        gray = cv2.cvtColor(warped_card, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    def _smooth_1d(self, arr, k=5):
+        if len(arr) < k or k <= 1:
+            return arr.astype(np.float32)
+        kernel = np.ones(k, dtype=np.float32) / float(k)
+        return np.convolve(arr.astype(np.float32), kernel, mode="same")
 
+    def _first_sustained_transition_from_start(self, signal):
+        if signal is None or len(signal) < 8:
+            return None
+
+        smoothed = self._smooth_1d(signal, self.scan_smooth_window)
+        grad = np.abs(np.diff(smoothed))
+
+        if len(grad) < 6:
+            return None
+
+        candidates = np.where(grad >= self.min_transition_strength)[0]
+        if len(candidates) == 0:
+            return None
+
+        for idx in candidates:
+            left = max(0, idx - 2)
+            right = min(len(grad), idx + 3)
+            local = grad[left:right]
+            if len(local) == 0:
+                continue
+
+            strong_count = int(np.sum(local >= self.min_transition_strength * 0.65))
+            if strong_count >= 2:
+                return int(idx)
+
+        return None
+
+    def _scan_left_inward_points(self, gray):
+        h, w = gray.shape
+        x_min = max(4, int(w * self.min_border_offset_ratio))
+        x_max = max(x_min + 10, int(w * self.max_border_offset_ratio))
+        points = []
+
+        for y in range(int(h * 0.18), int(h * 0.82)):
+            row = gray[y, x_min:x_max].astype(np.float32)
+            idx = self._first_sustained_transition_from_start(row)
+            if idx is not None:
+                points.append(float(x_min + idx))
+
+        return points
+
+    def _scan_right_inward_points(self, gray):
+        h, w = gray.shape
+        x_min = min(w - 12, int(w * (1.0 - self.max_border_offset_ratio)))
+        x_max = max(x_min + 10, int(w * (1.0 - self.min_border_offset_ratio)))
+        points = []
+
+        for y in range(int(h * 0.18), int(h * 0.82)):
+            row = gray[y, x_min:x_max].astype(np.float32)[::-1]
+            idx = self._first_sustained_transition_from_start(row)
+            if idx is not None:
+                points.append(float(idx + (w - x_max)))
+
+        return points
+
+    def _scan_top_inward_points(self, gray):
+        h, w = gray.shape
+        y_min = max(4, int(h * self.min_border_offset_ratio))
+        y_max = max(y_min + 10, int(h * self.max_border_offset_ratio))
+        points = []
+
+        for x in range(int(w * 0.18), int(w * 0.82)):
+            col = gray[y_min:y_max, x].astype(np.float32)
+            idx = self._first_sustained_transition_from_start(col)
+            if idx is not None:
+                points.append(float(y_min + idx))
+
+        return points
+
+    def _scan_bottom_inward_points(self, gray):
+        h, w = gray.shape
+        y_min = min(h - 12, int(h * (1.0 - self.max_border_offset_ratio)))
+        y_max = max(y_min + 10, int(h * (1.0 - self.min_border_offset_ratio)))
+        points = []
+
+        for x in range(int(w * 0.18), int(w * 0.82)):
+            col = gray[y_min:y_max, x].astype(np.float32)[::-1]
+            idx = self._first_sustained_transition_from_start(col)
+            if idx is not None:
+                points.append(float(idx + (h - y_max)))
+
+        return points
+
+    def _filter_consistent_points(self, points):
+        if not points:
+            return []
+
+        arr = np.array(points, dtype=np.float32)
+        center = self._cluster_mean(arr.tolist())
+        if center is None:
+            return []
+
+        keep = arr[np.abs(arr - center) <= self.local_consistency_tol]
+        return keep.tolist()
+
+    # ---------------------------------------------------------
+    # Centering methods
+    # ---------------------------------------------------------
+
+    def _compute_centering_inward(self, gray):
         h, w = gray.shape
 
-        left_distances = self._detect_left_border_points(gray)
-        right_distances = self._detect_right_border_points(gray)
-        top_distances = self._detect_top_border_points(gray)
-        bottom_distances = self._detect_bottom_border_points(gray)
+        left_distances = self._filter_consistent_points(self._scan_left_inward_points(gray))
+        right_distances = self._filter_consistent_points(self._scan_right_inward_points(gray))
+        top_distances = self._filter_consistent_points(self._scan_top_inward_points(gray))
+        bottom_distances = self._filter_consistent_points(self._scan_bottom_inward_points(gray))
 
         if (
-            len(left_distances) < 12 or
-            len(right_distances) < 12 or
-            len(top_distances) < 12 or
-            len(bottom_distances) < 12
+            len(left_distances) < self.min_scan_agreement_points or
+            len(right_distances) < self.min_scan_agreement_points or
+            len(top_distances) < self.min_scan_agreement_points or
+            len(bottom_distances) < self.min_scan_agreement_points
         ):
-            return {
-                "horizontal_ratio": 0.5,
-                "vertical_ratio": 0.5,
-                "left_mean": None,
-                "right_mean": None,
-                "top_mean": None,
-                "bottom_mean": None,
-                "inner_left_x": None,
-                "inner_right_x": None,
-                "inner_top_y": None,
-                "inner_bottom_y": None,
-                "card_width": int(w),
-                "card_height": int(h),
-            }
+            return None
 
         left_mean = self._cluster_mean(left_distances)
         right_mean = self._cluster_mean(right_distances)
@@ -503,7 +608,183 @@ class VoodooRawEngine:
             left_mean is None or right_mean is None or
             top_mean is None or bottom_mean is None
         ):
+            return None
+
+        left_mean = max(1.0, left_mean)
+        right_mean = max(1.0, right_mean)
+        top_mean = max(1.0, top_mean)
+        bottom_mean = max(1.0, bottom_mean)
+
+        horizontal_ratio = min(left_mean, right_mean) / max(left_mean, right_mean)
+        vertical_ratio = min(top_mean, bottom_mean) / max(top_mean, bottom_mean)
+
+        left_std = float(np.std(left_distances)) if len(left_distances) > 1 else 0.0
+        right_std = float(np.std(right_distances)) if len(right_distances) > 1 else 0.0
+        top_std = float(np.std(top_distances)) if len(top_distances) > 1 else 0.0
+        bottom_std = float(np.std(bottom_distances)) if len(bottom_distances) > 1 else 0.0
+
+        stability = 1.0 - np.clip(
+            np.mean([left_std, right_std, top_std, bottom_std]) / 10.0,
+            0,
+            1
+        )
+
+        support = np.clip(
+            np.mean([
+                len(left_distances),
+                len(right_distances),
+                len(top_distances),
+                len(bottom_distances),
+            ]) / 80.0,
+            0,
+            1
+        )
+
+        centering_confidence = float(np.clip((stability * 0.65) + (support * 0.35), 0, 1))
+
+        return {
+            "method": "inward",
+            "horizontal_ratio": float(horizontal_ratio),
+            "vertical_ratio": float(vertical_ratio),
+            "left_mean": round(float(left_mean), 2),
+            "right_mean": round(float(right_mean), 2),
+            "top_mean": round(float(top_mean), 2),
+            "bottom_mean": round(float(bottom_mean), 2),
+            "inner_left_x": round(float(left_mean), 2),
+            "inner_right_x": round(float(w - right_mean), 2),
+            "inner_top_y": round(float(top_mean), 2),
+            "inner_bottom_y": round(float(h - bottom_mean), 2),
+            "card_width": int(w),
+            "card_height": int(h),
+            "centering_confidence": round(centering_confidence, 3),
+        }
+
+    def _compute_centering_old(self, gray):
+        h, w = gray.shape
+
+        left_distances = self._detect_left_border_points_old(gray)
+        right_distances = self._detect_right_border_points_old(gray)
+        top_distances = self._detect_top_border_points_old(gray)
+        bottom_distances = self._detect_bottom_border_points_old(gray)
+
+        if (
+            len(left_distances) < 12 or
+            len(right_distances) < 12 or
+            len(top_distances) < 12 or
+            len(bottom_distances) < 12
+        ):
+            return None
+
+        left_mean = self._cluster_mean(left_distances)
+        right_mean = self._cluster_mean(right_distances)
+        top_mean = self._cluster_mean(top_distances)
+        bottom_mean = self._cluster_mean(bottom_distances)
+
+        if (
+            left_mean is None or right_mean is None or
+            top_mean is None or bottom_mean is None
+        ):
+            return None
+
+        left_mean = max(1.0, left_mean)
+        right_mean = max(1.0, right_mean)
+        top_mean = max(1.0, top_mean)
+        bottom_mean = max(1.0, bottom_mean)
+
+        horizontal_ratio = min(left_mean, right_mean) / max(left_mean, right_mean)
+        vertical_ratio = min(top_mean, bottom_mean) / max(top_mean, bottom_mean)
+
+        return {
+            "method": "old",
+            "horizontal_ratio": float(horizontal_ratio),
+            "vertical_ratio": float(vertical_ratio),
+            "left_mean": round(float(left_mean), 2),
+            "right_mean": round(float(right_mean), 2),
+            "top_mean": round(float(top_mean), 2),
+            "bottom_mean": round(float(bottom_mean), 2),
+            "inner_left_x": round(float(left_mean), 2),
+            "inner_right_x": round(float(w - right_mean), 2),
+            "inner_top_y": round(float(top_mean), 2),
+            "inner_bottom_y": round(float(h - bottom_mean), 2),
+            "card_width": int(w),
+            "card_height": int(h),
+            "centering_confidence": 0.72,
+        }
+
+    def _should_fallback_to_old(self, inward_result):
+        if inward_result is None:
+            return True
+
+        hr = float(inward_result["horizontal_ratio"])
+        vr = float(inward_result["vertical_ratio"])
+        conf = float(inward_result["centering_confidence"])
+
+        left_mean = float(inward_result["left_mean"])
+        right_mean = float(inward_result["right_mean"])
+        top_mean = float(inward_result["top_mean"])
+        bottom_mean = float(inward_result["bottom_mean"])
+
+        spread_h = abs(left_mean - right_mean)
+        spread_v = abs(top_mean - bottom_mean)
+        worst_spread = max(spread_h, spread_v)
+
+        if conf < self.hybrid_min_confidence:
+            return True
+        if min(hr, vr) < self.hybrid_min_ratio:
+            return True
+        if worst_spread > self.hybrid_max_side_spread:
+            return True
+
+        if max(left_mean, right_mean) <= self.hybrid_tiny_mean_x and max(top_mean, bottom_mean) <= self.hybrid_tiny_mean_y:
+            return True
+
+        if hr >= 0.995 and vr >= 0.995 and min(left_mean, right_mean, top_mean, bottom_mean) < 30:
+            return True
+
+        return False
+
+    def _old_result_is_plausible(self, old_result):
+        if old_result is None:
+            return False
+
+        left_mean = float(old_result["left_mean"])
+        right_mean = float(old_result["right_mean"])
+        top_mean = float(old_result["top_mean"])
+        bottom_mean = float(old_result["bottom_mean"])
+        hr = float(old_result["horizontal_ratio"])
+        vr = float(old_result["vertical_ratio"])
+
+        spread_h = abs(left_mean - right_mean)
+        spread_v = abs(top_mean - bottom_mean)
+        worst_spread = max(spread_h, spread_v)
+
+        if worst_spread > self.hybrid_old_max_side_spread:
+            return False
+
+        if min(hr, vr) < 0.58:
+            return False
+
+        return True
+
+    def compute_centering(self, warped_card):
+        gray = cv2.cvtColor(warped_card, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        h, w = gray.shape
+
+        inward_result = self._compute_centering_inward(gray)
+        old_result = self._compute_centering_old(gray)
+
+        use_old = self._should_fallback_to_old(inward_result) and self._old_result_is_plausible(old_result)
+
+        if use_old:
+            chosen = old_result
+        else:
+            chosen = inward_result if inward_result is not None else old_result
+
+        if chosen is None:
             return {
+                "method": "none",
                 "horizontal_ratio": 0.5,
                 "vertical_ratio": 0.5,
                 "left_mean": None,
@@ -516,35 +797,10 @@ class VoodooRawEngine:
                 "inner_bottom_y": None,
                 "card_width": int(w),
                 "card_height": int(h),
+                "centering_confidence": 0.0,
             }
 
-        left_mean = max(1.0, left_mean)
-        right_mean = max(1.0, right_mean)
-        top_mean = max(1.0, top_mean)
-        bottom_mean = max(1.0, bottom_mean)
-
-        horizontal_ratio = min(left_mean, right_mean) / max(left_mean, right_mean)
-        vertical_ratio = min(top_mean, bottom_mean) / max(top_mean, bottom_mean)
-
-        inner_left_x = left_mean
-        inner_right_x = float(w - right_mean)
-        inner_top_y = top_mean
-        inner_bottom_y = float(h - bottom_mean)
-
-        return {
-            "horizontal_ratio": float(horizontal_ratio),
-            "vertical_ratio": float(vertical_ratio),
-            "left_mean": round(float(left_mean), 2),
-            "right_mean": round(float(right_mean), 2),
-            "top_mean": round(float(top_mean), 2),
-            "bottom_mean": round(float(bottom_mean), 2),
-            "inner_left_x": round(float(inner_left_x), 2),
-            "inner_right_x": round(float(inner_right_x), 2),
-            "inner_top_y": round(float(inner_top_y), 2),
-            "inner_bottom_y": round(float(inner_bottom_y), 2),
-            "card_width": int(w),
-            "card_height": int(h),
-        }
+        return chosen
 
     # ---------------------------------------------------------
     # Edge feature
@@ -613,34 +869,36 @@ class VoodooRawEngine:
     # Confidence helper
     # ---------------------------------------------------------
 
-    def _compute_output_confidence(
+    def _compute_response_confidence(
         self,
+        centering,
         inner_left_x,
         inner_right_x,
         inner_top_y,
         inner_bottom_y,
-        left_mean,
-        right_mean,
-        top_mean,
-        bottom_mean,
     ):
-        mapped_presence = np.array([
+        presence = np.array([
             inner_left_x is not None,
             inner_right_x is not None,
             inner_top_y is not None,
             inner_bottom_y is not None,
         ], dtype=np.float32)
 
-        mapped_fraction = float(np.mean(mapped_presence))
-        confidence = mapped_fraction
+        mapped_fraction = float(np.mean(presence))
+        confidence = float(np.clip(float(centering["centering_confidence"]) * mapped_fraction, 0, 1))
 
-        if None not in (left_mean, right_mean, top_mean, bottom_mean):
+        if None not in (
+            centering["left_mean"],
+            centering["right_mean"],
+            centering["top_mean"],
+            centering["bottom_mean"],
+        ):
             spread = max(
-                abs(float(left_mean) - float(right_mean)),
-                abs(float(top_mean) - float(bottom_mean)),
+                abs(float(centering["left_mean"]) - float(centering["right_mean"])),
+                abs(float(centering["top_mean"]) - float(centering["bottom_mean"])),
             )
             spread_penalty = float(np.clip(spread / 40.0, 0, 1))
-            confidence *= (1.0 - 0.5 * spread_penalty)
+            confidence *= (1.0 - 0.45 * spread_penalty)
 
         if mapped_fraction < 1.0:
             confidence = min(confidence, 0.75 * mapped_fraction)
@@ -699,51 +957,76 @@ class VoodooRawEngine:
             edge_score = self.compute_edge_score(warped)
             corner_score = self.compute_corner_score(warped)
 
+            image_w = int(image.shape[1])
+            image_h = int(image.shape[0])
+
             inner_left_x = None
             inner_right_x = None
             inner_top_y = None
             inner_bottom_y = None
 
-            image_w = int(image.shape[1])
-            image_h = int(image.shape[0])
-
             if centering["inner_left_x"] is not None:
                 mapped = self._safe_map_warp_point_to_image(
-                    Minv, centering["inner_left_x"], self.warp_height * 0.50, image_w, image_h
+                    Minv,
+                    centering["inner_left_x"],
+                    self.warp_height * 0.50,
+                    image_w,
+                    image_h,
                 )
                 if mapped is not None:
                     inner_left_x = mapped[0]
 
             if centering["inner_right_x"] is not None:
                 mapped = self._safe_map_warp_point_to_image(
-                    Minv, centering["inner_right_x"], self.warp_height * 0.50, image_w, image_h
+                    Minv,
+                    centering["inner_right_x"],
+                    self.warp_height * 0.50,
+                    image_w,
+                    image_h,
                 )
                 if mapped is not None:
                     inner_right_x = mapped[0]
 
             if centering["inner_top_y"] is not None:
                 mapped = self._safe_map_warp_point_to_image(
-                    Minv, self.warp_width * 0.50, centering["inner_top_y"], image_w, image_h
+                    Minv,
+                    self.warp_width * 0.50,
+                    centering["inner_top_y"],
+                    image_w,
+                    image_h,
                 )
                 if mapped is not None:
                     inner_top_y = mapped[1]
 
             if centering["inner_bottom_y"] is not None:
                 mapped = self._safe_map_warp_point_to_image(
-                    Minv, self.warp_width * 0.50, centering["inner_bottom_y"], image_w, image_h
+                    Minv,
+                    self.warp_width * 0.50,
+                    centering["inner_bottom_y"],
+                    image_w,
+                    image_h,
                 )
                 if mapped is not None:
                     inner_bottom_y = mapped[1]
 
-            confidence = self._compute_output_confidence(
+            if inner_left_x is None and centering["inner_left_x"] is not None:
+                inner_left_x = round(float(np.clip(np.min(quad[:, 0]) + centering["left_mean"], 0, image_w)), 2)
+
+            if inner_right_x is None and centering["inner_right_x"] is not None:
+                inner_right_x = round(float(np.clip(np.max(quad[:, 0]) - centering["right_mean"], 0, image_w)), 2)
+
+            if inner_top_y is None and centering["inner_top_y"] is not None:
+                inner_top_y = round(float(np.clip(np.min(quad[:, 1]) + centering["top_mean"], 0, image_h)), 2)
+
+            if inner_bottom_y is None and centering["inner_bottom_y"] is not None:
+                inner_bottom_y = round(float(np.clip(np.max(quad[:, 1]) - centering["bottom_mean"], 0, image_h)), 2)
+
+            response_confidence = self._compute_response_confidence(
+                centering,
                 inner_left_x,
                 inner_right_x,
                 inner_top_y,
                 inner_bottom_y,
-                centering["left_mean"],
-                centering["right_mean"],
-                centering["top_mean"],
-                centering["bottom_mean"],
             )
 
             card_bbox_x, card_bbox_y, card_bbox_w, card_bbox_h = cv2.boundingRect(quad.astype(np.int32))
@@ -753,7 +1036,7 @@ class VoodooRawEngine:
                 "vertical_ratio": round(float(centering["vertical_ratio"]), 4),
                 "edge_score": round(float(edge_score), 4),
                 "corner_score": round(float(corner_score), 4),
-                "confidence": round(float(confidence), 3),
+                "confidence": round(float(response_confidence), 3),
 
                 "card_bbox_x": int(card_bbox_x),
                 "card_bbox_y": int(card_bbox_y),
@@ -770,10 +1053,11 @@ class VoodooRawEngine:
                 "inner_top_y": None if inner_top_y is None else round(float(inner_top_y), 2),
                 "inner_bottom_y": None if inner_bottom_y is None else round(float(inner_bottom_y), 2),
 
-                "image_width": int(image.shape[1]),
-                "image_height": int(image.shape[0]),
+                "image_width": image_w,
+                "image_height": image_h,
 
                 "used_perspective_warp": True,
+                "centering_method": centering["method"],
                 "quad_top_left_x": round(float(quad[0][0]), 2),
                 "quad_top_left_y": round(float(quad[0][1]), 2),
                 "quad_top_right_x": round(float(quad[1][0]), 2),
@@ -805,15 +1089,12 @@ class VoodooRawEngine:
         if centering["inner_bottom_y"] is not None:
             inner_bottom_y = float(y) + float(centering["inner_bottom_y"])
 
-        confidence = self._compute_output_confidence(
+        response_confidence = self._compute_response_confidence(
+            centering,
             inner_left_x,
             inner_right_x,
             inner_top_y,
             inner_bottom_y,
-            centering["left_mean"],
-            centering["right_mean"],
-            centering["top_mean"],
-            centering["bottom_mean"],
         )
 
         return {
@@ -821,7 +1102,7 @@ class VoodooRawEngine:
             "vertical_ratio": round(float(centering["vertical_ratio"]), 4),
             "edge_score": round(float(edge_score), 4),
             "corner_score": round(float(corner_score), 4),
-            "confidence": round(float(confidence), 3),
+            "confidence": round(float(response_confidence), 3),
 
             "card_bbox_x": int(x),
             "card_bbox_y": int(y),
@@ -842,4 +1123,5 @@ class VoodooRawEngine:
             "image_height": int(image.shape[0]),
 
             "used_perspective_warp": False,
+            "centering_method": centering["method"],
         }
