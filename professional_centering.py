@@ -198,13 +198,20 @@ class VoodooRawEngine:
         self.warp_width = 750
         self.warp_height = 1050
 
-        # inward border scan tuning
-        self.scan_smooth_window = 5
-        self.min_transition_strength = 10.0
-        self.min_border_offset_ratio = 0.02
-        self.max_border_offset_ratio = 0.25
-        self.min_scan_agreement_points = 12
-        self.local_consistency_tol = 10.0
+        # centering tuning
+        self.grad_threshold = 8.0
+        self.left_band_start = 0.04
+        self.left_band_end = 0.22
+        self.right_band_start = 0.78
+        self.right_band_end = 0.96
+        self.top_band_start = 0.04
+        self.top_band_end = 0.22
+        self.bottom_band_start = 0.78
+        self.bottom_band_end = 0.96
+
+        # prefer realistic inner-border positions over tiny edge-adjacent spikes
+        self.min_side_offset_px = 12
+        self.max_candidate_jump = 18.0
 
     # ---------------------------------------------------------
     # Detect dominant card bounding box
@@ -372,115 +379,139 @@ class VoodooRawEngine:
         return float(np.mean(cluster))
 
     # ---------------------------------------------------------
-    # Inward-scan helpers
+    # Border candidate helpers
     # ---------------------------------------------------------
 
-    def _smooth_1d(self, arr, k=5):
-        if len(arr) < k or k <= 1:
-            return arr.astype(np.float32)
-        kernel = np.ones(k, dtype=np.float32) / float(k)
-        return np.convolve(arr.astype(np.float32), kernel, mode="same")
+    def _strong_edge_candidates(self, grad, threshold=None):
+        if grad is None or len(grad) == 0:
+            return []
+        if threshold is None:
+            threshold = self.grad_threshold
+        return [int(i) for i in np.where(grad > threshold)[0]]
 
-    def _first_sustained_transition_from_start(self, signal):
+    def _pick_best_candidate(self, candidates, grad, min_index=0):
         """
-        Find the first meaningful transition moving inward from the start of the scan.
-        We require:
-        - transition strength above threshold
-        - local consistency across nearby samples
+        Safer replacement for 'take all candidates':
+        - ignore very edge-adjacent candidates
+        - pick the strongest remaining candidate for the scanline
         """
-        if signal is None or len(signal) < 8:
+        if not candidates:
             return None
 
-        smoothed = self._smooth_1d(signal, self.scan_smooth_window)
-        grad = np.abs(np.diff(smoothed))
-
-        if len(grad) < 6:
+        filtered = [c for c in candidates if int(c) >= int(min_index)]
+        if not filtered:
             return None
 
-        candidates = np.where(grad >= self.min_transition_strength)[0]
-        if len(candidates) == 0:
-            return None
+        best = max(filtered, key=lambda idx: float(grad[int(idx)]))
+        return int(best)
 
-        for idx in candidates:
-            left = max(0, idx - 2)
-            right = min(len(grad), idx + 3)
-            local = grad[left:right]
-            if len(local) == 0:
-                continue
-
-            strong_count = int(np.sum(local >= self.min_transition_strength * 0.65))
-            if strong_count >= 2:
-                return int(idx)
-
-        return None
-
-    def _scan_left_inward_points(self, gray):
+    def _detect_left_border_points(self, gray):
         h, w = gray.shape
-        x_min = max(4, int(w * self.min_border_offset_ratio))
-        x_max = max(x_min + 10, int(w * self.max_border_offset_ratio))
+        x_min = max(6, int(w * self.left_band_start))
+        x_max = max(x_min + 10, int(w * self.left_band_end))
         points = []
 
         for y in range(int(h * 0.18), int(h * 0.82)):
             row = gray[y, x_min:x_max].astype(np.float32)
-            idx = self._first_sustained_transition_from_start(row)
-            if idx is not None:
-                points.append(float(x_min + idx))
+            if len(row) < 6:
+                continue
+
+            grad = np.abs(np.diff(row))
+            candidates = self._strong_edge_candidates(grad, threshold=self.grad_threshold)
+            if not candidates:
+                continue
+
+            chosen = self._pick_best_candidate(candidates, grad, min_index=self.min_side_offset_px)
+            if chosen is None:
+                continue
+
+            points.append(float(x_min + chosen))
 
         return points
 
-    def _scan_right_inward_points(self, gray):
+    def _detect_right_border_points(self, gray):
         h, w = gray.shape
-        x_min = min(w - 12, int(w * (1.0 - self.max_border_offset_ratio)))
-        x_max = max(x_min + 10, int(w * (1.0 - self.min_border_offset_ratio)))
+        x_min = min(w - 12, int(w * self.right_band_start))
+        x_max = max(x_min + 10, int(w * self.right_band_end))
         points = []
 
         for y in range(int(h * 0.18), int(h * 0.82)):
-            row = gray[y, x_min:x_max].astype(np.float32)[::-1]
-            idx = self._first_sustained_transition_from_start(row)
-            if idx is not None:
-                points.append(float(idx + (w - x_max)))
+            row = gray[y, x_min:x_max].astype(np.float32)
+            if len(row) < 6:
+                continue
+
+            grad = np.abs(np.diff(row))
+            candidates = self._strong_edge_candidates(grad, threshold=self.grad_threshold)
+            if not candidates:
+                continue
+
+            chosen = self._pick_best_candidate(candidates, grad, min_index=0)
+            if chosen is None:
+                continue
+
+            x = x_min + chosen
+            dist_from_right = float(w - x)
+
+            if dist_from_right < self.min_side_offset_px:
+                continue
+
+            points.append(dist_from_right)
 
         return points
 
-    def _scan_top_inward_points(self, gray):
+    def _detect_top_border_points(self, gray):
         h, w = gray.shape
-        y_min = max(4, int(h * self.min_border_offset_ratio))
-        y_max = max(y_min + 10, int(h * self.max_border_offset_ratio))
+        y_min = max(6, int(h * self.top_band_start))
+        y_max = max(y_min + 10, int(h * self.top_band_end))
         points = []
 
         for x in range(int(w * 0.18), int(w * 0.82)):
             col = gray[y_min:y_max, x].astype(np.float32)
-            idx = self._first_sustained_transition_from_start(col)
-            if idx is not None:
-                points.append(float(y_min + idx))
+            if len(col) < 6:
+                continue
+
+            grad = np.abs(np.diff(col))
+            candidates = self._strong_edge_candidates(grad, threshold=self.grad_threshold)
+            if not candidates:
+                continue
+
+            chosen = self._pick_best_candidate(candidates, grad, min_index=self.min_side_offset_px)
+            if chosen is None:
+                continue
+
+            points.append(float(y_min + chosen))
 
         return points
 
-    def _scan_bottom_inward_points(self, gray):
+    def _detect_bottom_border_points(self, gray):
         h, w = gray.shape
-        y_min = min(h - 12, int(h * (1.0 - self.max_border_offset_ratio)))
-        y_max = max(y_min + 10, int(h * (1.0 - self.min_border_offset_ratio)))
+        y_min = min(h - 12, int(h * self.bottom_band_start))
+        y_max = max(y_min + 10, int(h * self.bottom_band_end))
         points = []
 
         for x in range(int(w * 0.18), int(w * 0.82)):
-            col = gray[y_min:y_max, x].astype(np.float32)[::-1]
-            idx = self._first_sustained_transition_from_start(col)
-            if idx is not None:
-                points.append(float(idx + (h - y_max)))
+            col = gray[y_min:y_max, x].astype(np.float32)
+            if len(col) < 6:
+                continue
+
+            grad = np.abs(np.diff(col))
+            candidates = self._strong_edge_candidates(grad, threshold=self.grad_threshold)
+            if not candidates:
+                continue
+
+            chosen = self._pick_best_candidate(candidates, grad, min_index=0)
+            if chosen is None:
+                continue
+
+            y = y_min + chosen
+            dist_from_bottom = float(h - y)
+
+            if dist_from_bottom < self.min_side_offset_px:
+                continue
+
+            points.append(dist_from_bottom)
 
         return points
-
-    def _filter_consistent_points(self, points):
-        if not points:
-            return []
-
-        arr = np.array(points, dtype=np.float32)
-        center = self._cluster_mean(arr.tolist())
-        if center is None:
-            return []
-
-        keep = arr[np.abs(arr - center) <= self.local_consistency_tol]
-        return keep.tolist()
 
     # ---------------------------------------------------------
     # Centering on perspective-corrected card
@@ -492,21 +523,16 @@ class VoodooRawEngine:
 
         h, w = gray.shape
 
-        left_distances = self._scan_left_inward_points(gray)
-        right_distances = self._scan_right_inward_points(gray)
-        top_distances = self._scan_top_inward_points(gray)
-        bottom_distances = self._scan_bottom_inward_points(gray)
-
-        left_distances = self._filter_consistent_points(left_distances)
-        right_distances = self._filter_consistent_points(right_distances)
-        top_distances = self._filter_consistent_points(top_distances)
-        bottom_distances = self._filter_consistent_points(bottom_distances)
+        left_distances = self._detect_left_border_points(gray)
+        right_distances = self._detect_right_border_points(gray)
+        top_distances = self._detect_top_border_points(gray)
+        bottom_distances = self._detect_bottom_border_points(gray)
 
         if (
-            len(left_distances) < self.min_scan_agreement_points or
-            len(right_distances) < self.min_scan_agreement_points or
-            len(top_distances) < self.min_scan_agreement_points or
-            len(bottom_distances) < self.min_scan_agreement_points
+            len(left_distances) < 12 or
+            len(right_distances) < 12 or
+            len(top_distances) < 12 or
+            len(bottom_distances) < 12
         ):
             return {
                 "horizontal_ratio": 0.5,
@@ -769,18 +795,23 @@ class VoodooRawEngine:
                 if mapped is not None:
                     inner_bottom_y = mapped[1]
 
-            # fallback if warped measurement exists but mapped coordinate failed
-            if inner_left_x is None and centering["inner_left_x"] is not None:
-                inner_left_x = round(float(np.clip(np.min(quad[:, 0]) + centering["left_mean"], 0, image_w)), 2)
+            # fallback if mapping fails but warped border measurements are valid
+            quad_x_min = float(np.min(quad[:, 0]))
+            quad_x_max = float(np.max(quad[:, 0]))
+            quad_y_min = float(np.min(quad[:, 1]))
+            quad_y_max = float(np.max(quad[:, 1]))
 
-            if inner_right_x is None and centering["inner_right_x"] is not None:
-                inner_right_x = round(float(np.clip(np.max(quad[:, 0]) - centering["right_mean"], 0, image_w)), 2)
+            if inner_left_x is None and centering["left_mean"] is not None:
+                inner_left_x = float(np.clip(quad_x_min + centering["left_mean"], 0.0, image_w))
 
-            if inner_top_y is None and centering["inner_top_y"] is not None:
-                inner_top_y = round(float(np.clip(np.min(quad[:, 1]) + centering["top_mean"], 0, image_h)), 2)
+            if inner_right_x is None and centering["right_mean"] is not None:
+                inner_right_x = float(np.clip(quad_x_max - centering["right_mean"], 0.0, image_w))
 
-            if inner_bottom_y is None and centering["inner_bottom_y"] is not None:
-                inner_bottom_y = round(float(np.clip(np.max(quad[:, 1]) - centering["bottom_mean"], 0, image_h)), 2)
+            if inner_top_y is None and centering["top_mean"] is not None:
+                inner_top_y = float(np.clip(quad_y_min + centering["top_mean"], 0.0, image_h))
+
+            if inner_bottom_y is None and centering["bottom_mean"] is not None:
+                inner_bottom_y = float(np.clip(quad_y_max - centering["bottom_mean"], 0.0, image_h))
 
             mapped_presence = [
                 inner_left_x is not None,
@@ -856,7 +887,13 @@ class VoodooRawEngine:
             inner_top_y is not None,
             inner_bottom_y is not None,
         ]
-        response_confidence = float(np.clip(centering["centering_confidence"] * float(np.mean(np.array(presence, dtype=np.float32))), 0, 1))
+        response_confidence = float(
+            np.clip(
+                centering["centering_confidence"] * float(np.mean(np.array(presence, dtype=np.float32))),
+                0,
+                1
+            )
+        )
 
         return {
             "horizontal_ratio": round(float(centering["horizontal_ratio"]), 4),
