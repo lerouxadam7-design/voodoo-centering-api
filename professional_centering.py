@@ -198,19 +198,11 @@ class VoodooRawEngine:
         self.warp_width = 750
         self.warp_height = 1050
 
-        # inward border scan tuning
+        # original inward border scan tuning from your file
         self.scan_smooth_window = 5
         self.min_transition_strength = 10.0
         self.min_border_offset_ratio = 0.02
         self.max_border_offset_ratio = 0.25
-
-        # NEW: standard minimum inward search margins from outer border
-        # These keep the detector from grabbing the outside edge / warp artifact.
-        self.inner_search_start_ratio_x = 0.035
-        self.inner_search_start_ratio_y = 0.03
-        self.inner_search_start_px_x = 18
-        self.inner_search_start_px_y = 16
-
         self.min_scan_agreement_points = 12
         self.local_consistency_tol = 10.0
 
@@ -343,6 +335,9 @@ class VoodooRawEngine:
         if not np.isfinite(mapped_x) or not np.isfinite(mapped_y):
             return None
 
+        if mapped_x < -10 or mapped_x > image_w + 10 or mapped_y < -10 or mapped_y > image_h + 10:
+            return None
+
         mapped_x = float(np.clip(mapped_x, 0.0, float(image_w)))
         mapped_y = float(np.clip(mapped_y, 0.0, float(image_h)))
         return mapped_x, mapped_y
@@ -421,91 +416,57 @@ class VoodooRawEngine:
 
     def _scan_left_inward_points(self, gray):
         h, w = gray.shape
-        band_start = max(4, int(w * self.min_border_offset_ratio))
-        band_end = max(band_start + 10, int(w * self.max_border_offset_ratio))
-
-        search_start = max(
-            band_start,
-            int(w * self.inner_search_start_ratio_x),
-            self.inner_search_start_px_x
-        )
-
-        if search_start >= band_end - 6:
-            return []
-
+        x_min = max(4, int(w * self.min_border_offset_ratio))
+        x_max = max(x_min + 10, int(w * self.max_border_offset_ratio))
         points = []
+
         for y in range(int(h * 0.18), int(h * 0.82)):
-            row = gray[y, search_start:band_end].astype(np.float32)
+            row = gray[y, x_min:x_max].astype(np.float32)
             idx = self._first_sustained_transition_from_start(row)
             if idx is not None:
-                points.append(float(search_start + idx))
+                points.append(float(x_min + idx))
 
         return points
 
     def _scan_right_inward_points(self, gray):
         h, w = gray.shape
-        band_start = min(w - 12, int(w * (1.0 - self.max_border_offset_ratio)))
-        band_end = max(band_start + 10, int(w * (1.0 - self.min_border_offset_ratio)))
-
-        outer_clip = min(
-            w - 1,
-            max(int(w * (1.0 - self.inner_search_start_ratio_x)), w - self.inner_search_start_px_x)
-        )
-
-        if band_start >= outer_clip - 6:
-            return []
-
+        x_min = min(w - 12, int(w * (1.0 - self.max_border_offset_ratio)))
+        x_max = max(x_min + 10, int(w * (1.0 - self.min_border_offset_ratio)))
         points = []
+
         for y in range(int(h * 0.18), int(h * 0.82)):
-            row = gray[y, band_start:outer_clip].astype(np.float32)[::-1]
+            row = gray[y, x_min:x_max].astype(np.float32)[::-1]
             idx = self._first_sustained_transition_from_start(row)
             if idx is not None:
-                points.append(float(idx + (w - outer_clip)))
+                points.append(float(idx + (w - x_max)))
 
         return points
 
     def _scan_top_inward_points(self, gray):
         h, w = gray.shape
-        band_start = max(4, int(h * self.min_border_offset_ratio))
-        band_end = max(band_start + 10, int(h * self.max_border_offset_ratio))
-
-        search_start = max(
-            band_start,
-            int(h * self.inner_search_start_ratio_y),
-            self.inner_search_start_px_y
-        )
-
-        if search_start >= band_end - 6:
-            return []
-
+        y_min = max(4, int(h * self.min_border_offset_ratio))
+        y_max = max(y_min + 10, int(h * self.max_border_offset_ratio))
         points = []
+
         for x in range(int(w * 0.18), int(w * 0.82)):
-            col = gray[search_start:band_end, x].astype(np.float32)
+            col = gray[y_min:y_max, x].astype(np.float32)
             idx = self._first_sustained_transition_from_start(col)
             if idx is not None:
-                points.append(float(search_start + idx))
+                points.append(float(y_min + idx))
 
         return points
 
     def _scan_bottom_inward_points(self, gray):
         h, w = gray.shape
-        band_start = min(h - 12, int(h * (1.0 - self.max_border_offset_ratio)))
-        band_end = max(band_start + 10, int(h * (1.0 - self.min_border_offset_ratio)))
-
-        outer_clip = min(
-            h - 1,
-            max(int(h * (1.0 - self.inner_search_start_ratio_y)), h - self.inner_search_start_px_y)
-        )
-
-        if band_start >= outer_clip - 6:
-            return []
-
+        y_min = min(h - 12, int(h * (1.0 - self.max_border_offset_ratio)))
+        y_max = max(y_min + 10, int(h * (1.0 - self.min_border_offset_ratio)))
         points = []
+
         for x in range(int(w * 0.18), int(w * 0.82)):
-            col = gray[band_start:outer_clip, x].astype(np.float32)[::-1]
+            col = gray[y_min:y_max, x].astype(np.float32)[::-1]
             idx = self._first_sustained_transition_from_start(col)
             if idx is not None:
-                points.append(float(idx + (h - outer_clip)))
+                points.append(float(idx + (h - y_max)))
 
         return points
 
