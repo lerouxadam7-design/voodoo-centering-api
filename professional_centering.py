@@ -327,9 +327,6 @@ class VoodooRawEngine:
         if not np.isfinite(mapped_x) or not np.isfinite(mapped_y):
             return None
 
-        if mapped_x < -10 or mapped_x > image_w + 10 or mapped_y < -10 or mapped_y > image_h + 10:
-            return None
-
         mapped_x = float(np.clip(mapped_x, 0.0, float(image_w)))
         mapped_y = float(np.clip(mapped_y, 0.0, float(image_h)))
         return mapped_x, mapped_y
@@ -374,89 +371,69 @@ class VoodooRawEngine:
 
     def _detect_left_border_points(self, gray):
         h, w = gray.shape
-        x_min = max(6, int(w * 0.04))
-        x_max = max(x_min + 10, int(w * 0.22))
-        points = []
+        search_w = max(12, int(w * 0.45))
+        cols = []
 
-        for y in range(int(h * 0.18), int(h * 0.82)):
-            row = gray[y, x_min:x_max].astype(np.float32)
-            if len(row) < 6:
-                continue
-
+        for y in range(int(h * 0.12), int(h * 0.88)):
+            row = gray[y, :search_w].astype(np.float32)
             grad = np.abs(np.diff(row))
-            candidates = self._strong_edge_candidates(grad, threshold=8.0)
-            if not candidates:
+            if len(grad) == 0:
                 continue
 
-            for x_rel in candidates:
-                points.append(float(x_min + x_rel))
+            x = int(np.argmax(grad))
+            cols.append(float(x))
 
-        return points
+        return cols
 
     def _detect_right_border_points(self, gray):
         h, w = gray.shape
-        x_min = min(w - 12, int(w * 0.78))
-        x_max = max(x_min + 10, int(w * 0.96))
-        points = []
+        search_w = max(12, int(w * 0.45))
+        cols = []
 
-        for y in range(int(h * 0.18), int(h * 0.82)):
-            row = gray[y, x_min:x_max].astype(np.float32)
-            if len(row) < 6:
-                continue
-
+        for y in range(int(h * 0.12), int(h * 0.88)):
+            row = gray[y, w - search_w:w].astype(np.float32)
             grad = np.abs(np.diff(row))
-            candidates = self._strong_edge_candidates(grad, threshold=8.0)
-            if not candidates:
+            if len(grad) == 0:
                 continue
 
-            for x_rel in candidates:
-                x = x_min + x_rel
-                points.append(float(w - x))
+            x_rel = int(np.argmax(grad))
+            x = (w - search_w) + x_rel
+            cols.append(float(w - x))
 
-        return points
+        return cols
 
     def _detect_top_border_points(self, gray):
         h, w = gray.shape
-        y_min = max(6, int(h * 0.04))
-        y_max = max(y_min + 10, int(h * 0.22))
-        points = []
+        search_h = max(12, int(h * 0.45))
+        rows = []
 
-        for x in range(int(w * 0.18), int(w * 0.82)):
-            col = gray[y_min:y_max, x].astype(np.float32)
-            if len(col) < 6:
-                continue
-
+        for x in range(int(w * 0.12), int(w * 0.88)):
+            col = gray[:search_h, x].astype(np.float32)
             grad = np.abs(np.diff(col))
-            candidates = self._strong_edge_candidates(grad, threshold=8.0)
-            if not candidates:
+            if len(grad) == 0:
                 continue
 
-            for y_rel in candidates:
-                points.append(float(y_min + y_rel))
+            y = int(np.argmax(grad))
+            rows.append(float(y))
 
-        return points
+        return rows
 
     def _detect_bottom_border_points(self, gray):
         h, w = gray.shape
-        y_min = min(h - 12, int(h * 0.78))
-        y_max = max(y_min + 10, int(h * 0.96))
-        points = []
+        search_h = max(12, int(h * 0.45))
+        rows = []
 
-        for x in range(int(w * 0.18), int(w * 0.82)):
-            col = gray[y_min:y_max, x].astype(np.float32)
-            if len(col) < 6:
-                continue
-
+        for x in range(int(w * 0.12), int(w * 0.88)):
+            col = gray[h - search_h:h, x].astype(np.float32)
             grad = np.abs(np.diff(col))
-            candidates = self._strong_edge_candidates(grad, threshold=8.0)
-            if not candidates:
+            if len(grad) == 0:
                 continue
 
-            for y_rel in candidates:
-                y = y_min + y_rel
-                points.append(float(h - y))
+            y_rel = int(np.argmax(grad))
+            y = (h - search_h) + y_rel
+            rows.append(float(h - y))
 
-        return points
+        return rows
 
     # ---------------------------------------------------------
     # Centering on perspective-corrected card
@@ -533,14 +510,14 @@ class VoodooRawEngine:
         inner_top_y = top_mean
         inner_bottom_y = float(h - bottom_mean)
 
-        # confidence based on consistency of detections
+        # confidence improvements only, no centering logic changes
         left_std = float(np.std(left_distances)) if len(left_distances) > 1 else 0.0
         right_std = float(np.std(right_distances)) if len(right_distances) > 1 else 0.0
         top_std = float(np.std(top_distances)) if len(top_distances) > 1 else 0.0
         bottom_std = float(np.std(bottom_distances)) if len(bottom_distances) > 1 else 0.0
 
         stability = 1.0 - np.clip(
-            np.mean([left_std, right_std, top_std, bottom_std]) / 12.0,
+            np.mean([left_std, right_std, top_std, bottom_std]) / 14.0,
             0,
             1
         )
@@ -556,19 +533,7 @@ class VoodooRawEngine:
             1
         )
 
-        imbalance = max(
-            abs(horizontal_ratio - 1.0),
-            abs(vertical_ratio - 1.0)
-        )
-        plausibility = 1.0 - np.clip(imbalance / 0.55, 0, 1)
-
-        centering_confidence = float(
-            np.clip(
-                (stability * 0.55) + (support * 0.25) + (plausibility * 0.20),
-                0,
-                1
-            )
-        )
+        centering_confidence = float(np.clip((stability * 0.65) + (support * 0.35), 0, 1))
 
         return {
             "horizontal_ratio": float(horizontal_ratio),
@@ -753,7 +718,7 @@ class VoodooRawEngine:
                 if mapped is not None:
                     inner_bottom_y = mapped[1]
 
-            # conservative fallback if mapping fails
+            # fallback only for coordinates, not ratios
             quad_x_min = float(np.min(quad[:, 0]))
             quad_x_max = float(np.max(quad[:, 0]))
             quad_y_min = float(np.min(quad[:, 1]))
@@ -771,13 +736,14 @@ class VoodooRawEngine:
             if inner_bottom_y is None and centering["bottom_mean"] is not None:
                 inner_bottom_y = float(np.clip(quad_y_max - centering["bottom_mean"], 0.0, image_h))
 
-            mapped_presence = [
+            mapped_presence = np.array([
                 inner_left_x is not None,
                 inner_right_x is not None,
                 inner_top_y is not None,
                 inner_bottom_y is not None,
-            ]
-            mapped_fraction = float(np.mean(np.array(mapped_presence, dtype=np.float32)))
+            ], dtype=np.float32)
+
+            mapped_fraction = float(np.mean(mapped_presence))
             response_confidence = float(np.clip(centering["centering_confidence"] * mapped_fraction, 0, 1))
 
             card_bbox_x, card_bbox_y, card_bbox_w, card_bbox_h = cv2.boundingRect(quad.astype(np.int32))
@@ -839,15 +805,16 @@ class VoodooRawEngine:
         if centering["inner_bottom_y"] is not None:
             inner_bottom_y = float(y) + float(centering["inner_bottom_y"])
 
-        presence = [
+        presence = np.array([
             inner_left_x is not None,
             inner_right_x is not None,
             inner_top_y is not None,
             inner_bottom_y is not None,
-        ]
+        ], dtype=np.float32)
+
         response_confidence = float(
             np.clip(
-                centering["centering_confidence"] * float(np.mean(np.array(presence, dtype=np.float32))),
+                centering["centering_confidence"] * float(np.mean(presence)),
                 0,
                 1
             )
