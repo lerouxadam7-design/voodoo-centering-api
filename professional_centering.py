@@ -198,6 +198,14 @@ class VoodooRawEngine:
         self.warp_width = 750
         self.warp_height = 1050
 
+        # inward border scan tuning
+        self.scan_smooth_window = 5
+        self.min_transition_strength = 10.0
+        self.min_border_offset_ratio = 0.02
+        self.max_border_offset_ratio = 0.25
+        self.min_scan_agreement_points = 12
+        self.local_consistency_tol = 10.0
+
     # ---------------------------------------------------------
     # Detect dominant card bounding box
     # ---------------------------------------------------------
@@ -348,99 +356,115 @@ class VoodooRawEngine:
         return float(np.mean(cluster))
 
     # ---------------------------------------------------------
-    # Border candidate helpers
+    # Inward-scan helpers
     # ---------------------------------------------------------
 
-    def _strong_edge_candidates(self, grad, threshold=8.0):
-        if grad is None or len(grad) == 0:
+    def _smooth_1d(self, arr, k=5):
+        if len(arr) < k or k <= 1:
+            return arr.astype(np.float32)
+        kernel = np.ones(k, dtype=np.float32) / float(k)
+        return np.convolve(arr.astype(np.float32), kernel, mode="same")
+
+    def _first_sustained_transition_from_start(self, signal):
+        """
+        Find the first meaningful transition moving inward from the start of the scan.
+        We require:
+        - transition strength above threshold
+        - local consistency across nearby samples
+        """
+        if signal is None or len(signal) < 8:
+            return None
+
+        smoothed = self._smooth_1d(signal, self.scan_smooth_window)
+        grad = np.abs(np.diff(smoothed))
+
+        if len(grad) < 6:
+            return None
+
+        candidates = np.where(grad >= self.min_transition_strength)[0]
+        if len(candidates) == 0:
+            return None
+
+        for idx in candidates:
+            left = max(0, idx - 2)
+            right = min(len(grad), idx + 3)
+            local = grad[left:right]
+            if len(local) == 0:
+                continue
+
+            strong_count = int(np.sum(local >= self.min_transition_strength * 0.65))
+            if strong_count >= 2:
+                return int(idx)
+
+        return None
+
+    def _scan_left_inward_points(self, gray):
+        h, w = gray.shape
+        x_min = max(4, int(w * self.min_border_offset_ratio))
+        x_max = max(x_min + 10, int(w * self.max_border_offset_ratio))
+        points = []
+
+        for y in range(int(h * 0.18), int(h * 0.82)):
+            row = gray[y, x_min:x_max].astype(np.float32)
+            idx = self._first_sustained_transition_from_start(row)
+            if idx is not None:
+                points.append(float(x_min + idx))
+
+        return points
+
+    def _scan_right_inward_points(self, gray):
+        h, w = gray.shape
+        x_min = min(w - 12, int(w * (1.0 - self.max_border_offset_ratio)))
+        x_max = max(x_min + 10, int(w * (1.0 - self.min_border_offset_ratio)))
+        points = []
+
+        for y in range(int(h * 0.18), int(h * 0.82)):
+            row = gray[y, x_min:x_max].astype(np.float32)[::-1]
+            idx = self._first_sustained_transition_from_start(row)
+            if idx is not None:
+                points.append(float(idx + (w - x_max)))
+
+        return points
+
+    def _scan_top_inward_points(self, gray):
+        h, w = gray.shape
+        y_min = max(4, int(h * self.min_border_offset_ratio))
+        y_max = max(y_min + 10, int(h * self.max_border_offset_ratio))
+        points = []
+
+        for x in range(int(w * 0.18), int(w * 0.82)):
+            col = gray[y_min:y_max, x].astype(np.float32)
+            idx = self._first_sustained_transition_from_start(col)
+            if idx is not None:
+                points.append(float(y_min + idx))
+
+        return points
+
+    def _scan_bottom_inward_points(self, gray):
+        h, w = gray.shape
+        y_min = min(h - 12, int(h * (1.0 - self.max_border_offset_ratio)))
+        y_max = max(y_min + 10, int(h * (1.0 - self.min_border_offset_ratio)))
+        points = []
+
+        for x in range(int(w * 0.18), int(w * 0.82)):
+            col = gray[y_min:y_max, x].astype(np.float32)[::-1]
+            idx = self._first_sustained_transition_from_start(col)
+            if idx is not None:
+                points.append(float(idx + (h - y_max)))
+
+        return points
+
+    def _filter_consistent_points(self, points):
+        if not points:
             return []
-        return [int(i) for i in np.where(grad > threshold)[0]]
 
-    def _detect_left_border_points(self, gray):
-        h, w = gray.shape
-        x_min = max(6, int(w * 0.04))
-        x_max = max(x_min + 10, int(w * 0.22))
-        points = []
+        arr = np.array(points, dtype=np.float32)
+        center = self._cluster_mean(arr.tolist())
+        if center is None:
+            return []
 
-        for y in range(int(h * 0.18), int(h * 0.82)):
-            row = gray[y, x_min:x_max].astype(np.float32)
-            if len(row) < 6:
-                continue
-
-            grad = np.abs(np.diff(row))
-            candidates = self._strong_edge_candidates(grad, threshold=8.0)
-            if not candidates:
-                continue
-
-            for x_rel in candidates:
-                points.append(float(x_min + x_rel))
-
-        return points
-
-    def _detect_right_border_points(self, gray):
-        h, w = gray.shape
-        x_min = min(w - 12, int(w * 0.78))
-        x_max = max(x_min + 10, int(w * 0.96))
-        points = []
-
-        for y in range(int(h * 0.18), int(h * 0.82)):
-            row = gray[y, x_min:x_max].astype(np.float32)
-            if len(row) < 6:
-                continue
-
-            grad = np.abs(np.diff(row))
-            candidates = self._strong_edge_candidates(grad, threshold=8.0)
-            if not candidates:
-                continue
-
-            for x_rel in candidates:
-                x = x_min + x_rel
-                points.append(float(w - x))
-
-        return points
-
-    def _detect_top_border_points(self, gray):
-        h, w = gray.shape
-        y_min = max(6, int(h * 0.04))
-        y_max = max(y_min + 10, int(h * 0.22))
-        points = []
-
-        for x in range(int(w * 0.18), int(w * 0.82)):
-            col = gray[y_min:y_max, x].astype(np.float32)
-            if len(col) < 6:
-                continue
-
-            grad = np.abs(np.diff(col))
-            candidates = self._strong_edge_candidates(grad, threshold=8.0)
-            if not candidates:
-                continue
-
-            for y_rel in candidates:
-                points.append(float(y_min + y_rel))
-
-        return points
-
-    def _detect_bottom_border_points(self, gray):
-        h, w = gray.shape
-        y_min = min(h - 12, int(h * 0.78))
-        y_max = max(y_min + 10, int(h * 0.96))
-        points = []
-
-        for x in range(int(w * 0.18), int(w * 0.82)):
-            col = gray[y_min:y_max, x].astype(np.float32)
-            if len(col) < 6:
-                continue
-
-            grad = np.abs(np.diff(col))
-            candidates = self._strong_edge_candidates(grad, threshold=8.0)
-            if not candidates:
-                continue
-
-            for y_rel in candidates:
-                y = y_min + y_rel
-                points.append(float(h - y))
-
-        return points
+        keep = arr[np.abs(arr - center) <= self.local_consistency_tol]
+        return keep.tolist()
 
     # ---------------------------------------------------------
     # Centering on perspective-corrected card
@@ -452,16 +476,21 @@ class VoodooRawEngine:
 
         h, w = gray.shape
 
-        left_distances = self._detect_left_border_points(gray)
-        right_distances = self._detect_right_border_points(gray)
-        top_distances = self._detect_top_border_points(gray)
-        bottom_distances = self._detect_bottom_border_points(gray)
+        left_distances = self._scan_left_inward_points(gray)
+        right_distances = self._scan_right_inward_points(gray)
+        top_distances = self._scan_top_inward_points(gray)
+        bottom_distances = self._scan_bottom_inward_points(gray)
+
+        left_distances = self._filter_consistent_points(left_distances)
+        right_distances = self._filter_consistent_points(right_distances)
+        top_distances = self._filter_consistent_points(top_distances)
+        bottom_distances = self._filter_consistent_points(bottom_distances)
 
         if (
-            len(left_distances) < 12 or
-            len(right_distances) < 12 or
-            len(top_distances) < 12 or
-            len(bottom_distances) < 12
+            len(left_distances) < self.min_scan_agreement_points or
+            len(right_distances) < self.min_scan_agreement_points or
+            len(top_distances) < self.min_scan_agreement_points or
+            len(bottom_distances) < self.min_scan_agreement_points
         ):
             return {
                 "horizontal_ratio": 0.5,
@@ -476,6 +505,7 @@ class VoodooRawEngine:
                 "inner_bottom_y": None,
                 "card_width": int(w),
                 "card_height": int(h),
+                "centering_confidence": 0.0,
             }
 
         left_mean = self._cluster_mean(left_distances)
@@ -500,6 +530,7 @@ class VoodooRawEngine:
                 "inner_bottom_y": None,
                 "card_width": int(w),
                 "card_height": int(h),
+                "centering_confidence": 0.0,
             }
 
         left_mean = max(1.0, left_mean)
@@ -515,6 +546,30 @@ class VoodooRawEngine:
         inner_top_y = top_mean
         inner_bottom_y = float(h - bottom_mean)
 
+        left_std = float(np.std(left_distances)) if len(left_distances) > 1 else 0.0
+        right_std = float(np.std(right_distances)) if len(right_distances) > 1 else 0.0
+        top_std = float(np.std(top_distances)) if len(top_distances) > 1 else 0.0
+        bottom_std = float(np.std(bottom_distances)) if len(bottom_distances) > 1 else 0.0
+
+        stability = 1.0 - np.clip(
+            np.mean([left_std, right_std, top_std, bottom_std]) / 10.0,
+            0,
+            1
+        )
+
+        support = np.clip(
+            np.mean([
+                len(left_distances),
+                len(right_distances),
+                len(top_distances),
+                len(bottom_distances),
+            ]) / 80.0,
+            0,
+            1
+        )
+
+        centering_confidence = float(np.clip((stability * 0.65) + (support * 0.35), 0, 1))
+
         return {
             "horizontal_ratio": float(horizontal_ratio),
             "vertical_ratio": float(vertical_ratio),
@@ -528,6 +583,7 @@ class VoodooRawEngine:
             "inner_bottom_y": round(float(inner_bottom_y), 2),
             "card_width": int(w),
             "card_height": int(h),
+            "centering_confidence": round(centering_confidence, 3),
         }
 
     # ---------------------------------------------------------
@@ -673,7 +729,7 @@ class VoodooRawEngine:
                 "vertical_ratio": round(float(centering["vertical_ratio"]), 4),
                 "edge_score": round(float(edge_score), 4),
                 "corner_score": round(float(corner_score), 4),
-                "confidence": 1.0,
+                "confidence": round(float(centering["centering_confidence"]), 3),
 
                 "card_bbox_x": int(card_bbox_x),
                 "card_bbox_y": int(card_bbox_y),
@@ -730,7 +786,7 @@ class VoodooRawEngine:
             "vertical_ratio": round(float(centering["vertical_ratio"]), 4),
             "edge_score": round(float(edge_score), 4),
             "corner_score": round(float(corner_score), 4),
-            "confidence": 1.0,
+            "confidence": round(float(centering["centering_confidence"]), 3),
 
             "card_bbox_x": int(x),
             "card_bbox_y": int(y),
