@@ -738,7 +738,7 @@ class VoodooRawEngine:
         if max(left_mean, right_mean) <= self.hybrid_tiny_mean_x and max(top_mean, bottom_mean) <= self.hybrid_tiny_mean_y:
             return True
 
-        if hr >= 0.995 and vr >= 0.995 and min(left_mean, right_mean, top_mean, bottom_mean) < 30:
+        if hr >= 0.995 and vr >= 0.995 and min(left_mean, right_mean, top_mean, bottom_mean) < 30.0:
             return True
 
         return False
@@ -775,32 +775,31 @@ class VoodooRawEngine:
         inward_result = self._compute_centering_inward(gray)
         old_result = self._compute_centering_old(gray)
 
-        use_old = self._should_fallback_to_old(inward_result) and self._old_result_is_plausible(old_result)
+        if self._should_fallback_to_old(inward_result) and old_result is not None:
+            return old_result
 
-        if use_old:
-            chosen = old_result
-        else:
-            chosen = inward_result if inward_result is not None else old_result
+        if inward_result is not None:
+            return inward_result
 
-        if chosen is None:
-            return {
-                "method": "none",
-                "horizontal_ratio": 0.5,
-                "vertical_ratio": 0.5,
-                "left_mean": None,
-                "right_mean": None,
-                "top_mean": None,
-                "bottom_mean": None,
-                "inner_left_x": None,
-                "inner_right_x": None,
-                "inner_top_y": None,
-                "inner_bottom_y": None,
-                "card_width": int(w),
-                "card_height": int(h),
-                "centering_confidence": 0.0,
-            }
+        if old_result is not None:
+            return old_result
 
-        return chosen
+        return {
+            "method": "none",
+            "horizontal_ratio": 0.5,
+            "vertical_ratio": 0.5,
+            "left_mean": None,
+            "right_mean": None,
+            "top_mean": None,
+            "bottom_mean": None,
+            "inner_left_x": None,
+            "inner_right_x": None,
+            "inner_top_y": None,
+            "inner_bottom_y": None,
+            "card_width": int(w),
+            "card_height": int(h),
+            "centering_confidence": 0.0,
+        }
 
     # ---------------------------------------------------------
     # Edge feature
