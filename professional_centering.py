@@ -198,21 +198,6 @@ class VoodooRawEngine:
         self.warp_width = 750
         self.warp_height = 1050
 
-        # centering tuning
-        self.grad_threshold = 8.0
-        self.left_band_start = 0.04
-        self.left_band_end = 0.22
-        self.right_band_start = 0.78
-        self.right_band_end = 0.96
-        self.top_band_start = 0.04
-        self.top_band_end = 0.22
-        self.bottom_band_start = 0.78
-        self.bottom_band_end = 0.96
-
-        # prefer realistic inner-border positions over tiny edge-adjacent spikes
-        self.min_side_offset_px = 12
-        self.max_candidate_jump = 18.0
-
     # ---------------------------------------------------------
     # Detect dominant card bounding box
     # ---------------------------------------------------------
@@ -342,7 +327,7 @@ class VoodooRawEngine:
         if not np.isfinite(mapped_x) or not np.isfinite(mapped_y):
             return None
 
-        if mapped_x < -5 or mapped_x > image_w + 5 or mapped_y < -5 or mapped_y > image_h + 5:
+        if mapped_x < -10 or mapped_x > image_w + 10 or mapped_y < -10 or mapped_y > image_h + 10:
             return None
 
         mapped_x = float(np.clip(mapped_x, 0.0, float(image_w)))
@@ -379,36 +364,18 @@ class VoodooRawEngine:
         return float(np.mean(cluster))
 
     # ---------------------------------------------------------
-    # Border candidate helpers
+    # Original border candidate helpers
     # ---------------------------------------------------------
 
-    def _strong_edge_candidates(self, grad, threshold=None):
+    def _strong_edge_candidates(self, grad, threshold=8.0):
         if grad is None or len(grad) == 0:
             return []
-        if threshold is None:
-            threshold = self.grad_threshold
         return [int(i) for i in np.where(grad > threshold)[0]]
-
-    def _pick_best_candidate(self, candidates, grad, min_index=0):
-        """
-        Safer replacement for 'take all candidates':
-        - ignore very edge-adjacent candidates
-        - pick the strongest remaining candidate for the scanline
-        """
-        if not candidates:
-            return None
-
-        filtered = [c for c in candidates if int(c) >= int(min_index)]
-        if not filtered:
-            return None
-
-        best = max(filtered, key=lambda idx: float(grad[int(idx)]))
-        return int(best)
 
     def _detect_left_border_points(self, gray):
         h, w = gray.shape
-        x_min = max(6, int(w * self.left_band_start))
-        x_max = max(x_min + 10, int(w * self.left_band_end))
+        x_min = max(6, int(w * 0.04))
+        x_max = max(x_min + 10, int(w * 0.22))
         points = []
 
         for y in range(int(h * 0.18), int(h * 0.82)):
@@ -417,22 +384,19 @@ class VoodooRawEngine:
                 continue
 
             grad = np.abs(np.diff(row))
-            candidates = self._strong_edge_candidates(grad, threshold=self.grad_threshold)
+            candidates = self._strong_edge_candidates(grad, threshold=8.0)
             if not candidates:
                 continue
 
-            chosen = self._pick_best_candidate(candidates, grad, min_index=self.min_side_offset_px)
-            if chosen is None:
-                continue
-
-            points.append(float(x_min + chosen))
+            for x_rel in candidates:
+                points.append(float(x_min + x_rel))
 
         return points
 
     def _detect_right_border_points(self, gray):
         h, w = gray.shape
-        x_min = min(w - 12, int(w * self.right_band_start))
-        x_max = max(x_min + 10, int(w * self.right_band_end))
+        x_min = min(w - 12, int(w * 0.78))
+        x_max = max(x_min + 10, int(w * 0.96))
         points = []
 
         for y in range(int(h * 0.18), int(h * 0.82)):
@@ -441,28 +405,20 @@ class VoodooRawEngine:
                 continue
 
             grad = np.abs(np.diff(row))
-            candidates = self._strong_edge_candidates(grad, threshold=self.grad_threshold)
+            candidates = self._strong_edge_candidates(grad, threshold=8.0)
             if not candidates:
                 continue
 
-            chosen = self._pick_best_candidate(candidates, grad, min_index=0)
-            if chosen is None:
-                continue
-
-            x = x_min + chosen
-            dist_from_right = float(w - x)
-
-            if dist_from_right < self.min_side_offset_px:
-                continue
-
-            points.append(dist_from_right)
+            for x_rel in candidates:
+                x = x_min + x_rel
+                points.append(float(w - x))
 
         return points
 
     def _detect_top_border_points(self, gray):
         h, w = gray.shape
-        y_min = max(6, int(h * self.top_band_start))
-        y_max = max(y_min + 10, int(h * self.top_band_end))
+        y_min = max(6, int(h * 0.04))
+        y_max = max(y_min + 10, int(h * 0.22))
         points = []
 
         for x in range(int(w * 0.18), int(w * 0.82)):
@@ -471,22 +427,19 @@ class VoodooRawEngine:
                 continue
 
             grad = np.abs(np.diff(col))
-            candidates = self._strong_edge_candidates(grad, threshold=self.grad_threshold)
+            candidates = self._strong_edge_candidates(grad, threshold=8.0)
             if not candidates:
                 continue
 
-            chosen = self._pick_best_candidate(candidates, grad, min_index=self.min_side_offset_px)
-            if chosen is None:
-                continue
-
-            points.append(float(y_min + chosen))
+            for y_rel in candidates:
+                points.append(float(y_min + y_rel))
 
         return points
 
     def _detect_bottom_border_points(self, gray):
         h, w = gray.shape
-        y_min = min(h - 12, int(h * self.bottom_band_start))
-        y_max = max(y_min + 10, int(h * self.bottom_band_end))
+        y_min = min(h - 12, int(h * 0.78))
+        y_max = max(y_min + 10, int(h * 0.96))
         points = []
 
         for x in range(int(w * 0.18), int(w * 0.82)):
@@ -495,21 +448,13 @@ class VoodooRawEngine:
                 continue
 
             grad = np.abs(np.diff(col))
-            candidates = self._strong_edge_candidates(grad, threshold=self.grad_threshold)
+            candidates = self._strong_edge_candidates(grad, threshold=8.0)
             if not candidates:
                 continue
 
-            chosen = self._pick_best_candidate(candidates, grad, min_index=0)
-            if chosen is None:
-                continue
-
-            y = y_min + chosen
-            dist_from_bottom = float(h - y)
-
-            if dist_from_bottom < self.min_side_offset_px:
-                continue
-
-            points.append(dist_from_bottom)
+            for y_rel in candidates:
+                y = y_min + y_rel
+                points.append(float(h - y))
 
         return points
 
@@ -588,13 +533,14 @@ class VoodooRawEngine:
         inner_top_y = top_mean
         inner_bottom_y = float(h - bottom_mean)
 
+        # confidence based on consistency of detections
         left_std = float(np.std(left_distances)) if len(left_distances) > 1 else 0.0
         right_std = float(np.std(right_distances)) if len(right_distances) > 1 else 0.0
         top_std = float(np.std(top_distances)) if len(top_distances) > 1 else 0.0
         bottom_std = float(np.std(bottom_distances)) if len(bottom_distances) > 1 else 0.0
 
         stability = 1.0 - np.clip(
-            np.mean([left_std, right_std, top_std, bottom_std]) / 10.0,
+            np.mean([left_std, right_std, top_std, bottom_std]) / 12.0,
             0,
             1
         )
@@ -605,12 +551,24 @@ class VoodooRawEngine:
                 len(right_distances),
                 len(top_distances),
                 len(bottom_distances),
-            ]) / 80.0,
+            ]) / 120.0,
             0,
             1
         )
 
-        centering_confidence = float(np.clip((stability * 0.65) + (support * 0.35), 0, 1))
+        imbalance = max(
+            abs(horizontal_ratio - 1.0),
+            abs(vertical_ratio - 1.0)
+        )
+        plausibility = 1.0 - np.clip(imbalance / 0.55, 0, 1)
+
+        centering_confidence = float(
+            np.clip(
+                (stability * 0.55) + (support * 0.25) + (plausibility * 0.20),
+                0,
+                1
+            )
+        )
 
         return {
             "horizontal_ratio": float(horizontal_ratio),
@@ -795,7 +753,7 @@ class VoodooRawEngine:
                 if mapped is not None:
                     inner_bottom_y = mapped[1]
 
-            # fallback if mapping fails but warped border measurements are valid
+            # conservative fallback if mapping fails
             quad_x_min = float(np.min(quad[:, 0]))
             quad_x_max = float(np.max(quad[:, 0]))
             quad_y_min = float(np.min(quad[:, 1]))
