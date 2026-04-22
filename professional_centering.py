@@ -198,7 +198,7 @@ class VoodooRawEngine:
         self.warp_width = 750
         self.warp_height = 1050
 
-        # original inward border scan tuning from your file
+        # inward border scan tuning
         self.scan_smooth_window = 5
         self.min_transition_strength = 10.0
         self.min_border_offset_ratio = 0.02
@@ -666,6 +666,45 @@ class VoodooRawEngine:
         return float(np.clip(final_score, 0, 1))
 
     # ---------------------------------------------------------
+    # Confidence helper
+    # ---------------------------------------------------------
+
+    def _apply_output_confidence_penalty(
+        self,
+        base_confidence,
+        inner_left_x,
+        inner_right_x,
+        inner_top_y,
+        inner_bottom_y,
+        left_mean,
+        right_mean,
+        top_mean,
+        bottom_mean,
+    ):
+        mapped_presence = np.array([
+            inner_left_x is not None,
+            inner_right_x is not None,
+            inner_top_y is not None,
+            inner_bottom_y is not None,
+        ], dtype=np.float32)
+
+        mapped_fraction = float(np.mean(mapped_presence))
+        response_confidence = float(np.clip(base_confidence * mapped_fraction, 0, 1))
+
+        if None not in (left_mean, right_mean, top_mean, bottom_mean):
+            spread = max(
+                abs(float(left_mean) - float(right_mean)),
+                abs(float(top_mean) - float(bottom_mean)),
+            )
+            spread_penalty = float(np.clip(spread / 40.0, 0, 1))
+            response_confidence *= (1.0 - 0.5 * spread_penalty)
+
+        if mapped_fraction < 1.0:
+            response_confidence = min(response_confidence, 0.75 * mapped_fraction)
+
+        return float(np.clip(response_confidence, 0, 1))
+
+    # ---------------------------------------------------------
     # Main analysis
     # ---------------------------------------------------------
 
@@ -753,14 +792,17 @@ class VoodooRawEngine:
                 if mapped is not None:
                     inner_bottom_y = mapped[1]
 
-            mapped_presence = np.array([
-                inner_left_x is not None,
-                inner_right_x is not None,
-                inner_top_y is not None,
-                inner_bottom_y is not None,
-            ], dtype=np.float32)
-
-            response_confidence = float(np.clip(centering["centering_confidence"] * float(np.mean(mapped_presence)), 0, 1))
+            response_confidence = self._apply_output_confidence_penalty(
+                centering["centering_confidence"],
+                inner_left_x,
+                inner_right_x,
+                inner_top_y,
+                inner_bottom_y,
+                centering["left_mean"],
+                centering["right_mean"],
+                centering["top_mean"],
+                centering["bottom_mean"],
+            )
 
             card_bbox_x, card_bbox_y, card_bbox_w, card_bbox_h = cv2.boundingRect(quad.astype(np.int32))
 
@@ -821,19 +863,16 @@ class VoodooRawEngine:
         if centering["inner_bottom_y"] is not None:
             inner_bottom_y = float(y) + float(centering["inner_bottom_y"])
 
-        presence = np.array([
-            inner_left_x is not None,
-            inner_right_x is not None,
-            inner_top_y is not None,
-            inner_bottom_y is not None,
-        ], dtype=np.float32)
-
-        response_confidence = float(
-            np.clip(
-                centering["centering_confidence"] * float(np.mean(presence)),
-                0,
-                1
-            )
+        response_confidence = self._apply_output_confidence_penalty(
+            centering["centering_confidence"],
+            inner_left_x,
+            inner_right_x,
+            inner_top_y,
+            inner_bottom_y,
+            centering["left_mean"],
+            centering["right_mean"],
+            centering["top_mean"],
+            centering["bottom_mean"],
         )
 
         return {
