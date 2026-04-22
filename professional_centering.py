@@ -318,6 +318,22 @@ class VoodooRawEngine:
         mapped = cv2.perspectiveTransform(pt, Minv)[0][0]
         return float(mapped[0]), float(mapped[1])
 
+    def _safe_map_warp_point_to_image(self, Minv, x, y, image_w, image_h):
+        try:
+            mapped_x, mapped_y = self.map_warp_point_to_image(Minv, x, y)
+        except Exception:
+            return None
+
+        if not np.isfinite(mapped_x) or not np.isfinite(mapped_y):
+            return None
+
+        if mapped_x < -10 or mapped_x > image_w + 10 or mapped_y < -10 or mapped_y > image_h + 10:
+            return None
+
+        mapped_x = float(np.clip(mapped_x, 0.0, float(image_w)))
+        mapped_y = float(np.clip(mapped_y, 0.0, float(image_h)))
+        return mapped_x, mapped_y
+
     # ---------------------------------------------------------
     # Clustering helper
     # ---------------------------------------------------------
@@ -594,6 +610,44 @@ class VoodooRawEngine:
         return float(np.clip(final_score, 0, 1))
 
     # ---------------------------------------------------------
+    # Confidence helper
+    # ---------------------------------------------------------
+
+    def _compute_output_confidence(
+        self,
+        inner_left_x,
+        inner_right_x,
+        inner_top_y,
+        inner_bottom_y,
+        left_mean,
+        right_mean,
+        top_mean,
+        bottom_mean,
+    ):
+        mapped_presence = np.array([
+            inner_left_x is not None,
+            inner_right_x is not None,
+            inner_top_y is not None,
+            inner_bottom_y is not None,
+        ], dtype=np.float32)
+
+        mapped_fraction = float(np.mean(mapped_presence))
+        confidence = mapped_fraction
+
+        if None not in (left_mean, right_mean, top_mean, bottom_mean):
+            spread = max(
+                abs(float(left_mean) - float(right_mean)),
+                abs(float(top_mean) - float(bottom_mean)),
+            )
+            spread_penalty = float(np.clip(spread / 40.0, 0, 1))
+            confidence *= (1.0 - 0.5 * spread_penalty)
+
+        if mapped_fraction < 1.0:
+            confidence = min(confidence, 0.75 * mapped_fraction)
+
+        return float(np.clip(confidence, 0, 1))
+
+    # ---------------------------------------------------------
     # Main analysis
     # ---------------------------------------------------------
 
@@ -650,21 +704,47 @@ class VoodooRawEngine:
             inner_top_y = None
             inner_bottom_y = None
 
+            image_w = int(image.shape[1])
+            image_h = int(image.shape[0])
+
             if centering["inner_left_x"] is not None:
-                mapped_x, _ = self.map_warp_point_to_image(Minv, centering["inner_left_x"], self.warp_height * 0.50)
-                inner_left_x = mapped_x
+                mapped = self._safe_map_warp_point_to_image(
+                    Minv, centering["inner_left_x"], self.warp_height * 0.50, image_w, image_h
+                )
+                if mapped is not None:
+                    inner_left_x = mapped[0]
 
             if centering["inner_right_x"] is not None:
-                mapped_x, _ = self.map_warp_point_to_image(Minv, centering["inner_right_x"], self.warp_height * 0.50)
-                inner_right_x = mapped_x
+                mapped = self._safe_map_warp_point_to_image(
+                    Minv, centering["inner_right_x"], self.warp_height * 0.50, image_w, image_h
+                )
+                if mapped is not None:
+                    inner_right_x = mapped[0]
 
             if centering["inner_top_y"] is not None:
-                _, mapped_y = self.map_warp_point_to_image(Minv, self.warp_width * 0.50, centering["inner_top_y"])
-                inner_top_y = mapped_y
+                mapped = self._safe_map_warp_point_to_image(
+                    Minv, self.warp_width * 0.50, centering["inner_top_y"], image_w, image_h
+                )
+                if mapped is not None:
+                    inner_top_y = mapped[1]
 
             if centering["inner_bottom_y"] is not None:
-                _, mapped_y = self.map_warp_point_to_image(Minv, self.warp_width * 0.50, centering["inner_bottom_y"])
-                inner_bottom_y = mapped_y
+                mapped = self._safe_map_warp_point_to_image(
+                    Minv, self.warp_width * 0.50, centering["inner_bottom_y"], image_w, image_h
+                )
+                if mapped is not None:
+                    inner_bottom_y = mapped[1]
+
+            confidence = self._compute_output_confidence(
+                inner_left_x,
+                inner_right_x,
+                inner_top_y,
+                inner_bottom_y,
+                centering["left_mean"],
+                centering["right_mean"],
+                centering["top_mean"],
+                centering["bottom_mean"],
+            )
 
             card_bbox_x, card_bbox_y, card_bbox_w, card_bbox_h = cv2.boundingRect(quad.astype(np.int32))
 
@@ -673,7 +753,7 @@ class VoodooRawEngine:
                 "vertical_ratio": round(float(centering["vertical_ratio"]), 4),
                 "edge_score": round(float(edge_score), 4),
                 "corner_score": round(float(corner_score), 4),
-                "confidence": 1.0,
+                "confidence": round(float(confidence), 3),
 
                 "card_bbox_x": int(card_bbox_x),
                 "card_bbox_y": int(card_bbox_y),
@@ -725,12 +805,23 @@ class VoodooRawEngine:
         if centering["inner_bottom_y"] is not None:
             inner_bottom_y = float(y) + float(centering["inner_bottom_y"])
 
+        confidence = self._compute_output_confidence(
+            inner_left_x,
+            inner_right_x,
+            inner_top_y,
+            inner_bottom_y,
+            centering["left_mean"],
+            centering["right_mean"],
+            centering["top_mean"],
+            centering["bottom_mean"],
+        )
+
         return {
             "horizontal_ratio": round(float(centering["horizontal_ratio"]), 4),
             "vertical_ratio": round(float(centering["vertical_ratio"]), 4),
             "edge_score": round(float(edge_score), 4),
             "corner_score": round(float(corner_score), 4),
-            "confidence": 1.0,
+            "confidence": round(float(confidence), 3),
 
             "card_bbox_x": int(x),
             "card_bbox_y": int(y),
